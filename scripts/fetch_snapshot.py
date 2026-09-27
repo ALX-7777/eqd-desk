@@ -47,7 +47,7 @@ CONFIGS = {
         "options_proxy": "SPY",
         "currency": "USD",
         "default_div_yield": 0.013,
-        "default_rate": 0.04,   # placeholder USD short rate — set to current level
+        "default_rate": 0.04,  # placeholder USD short rate — set to current level
     },
     "sx5e": {
         "name": "Euro Stoxx 50",
@@ -151,12 +151,12 @@ def fetch_skew_and_term(proxy_ticker: str):
                 vol = r.get("volume", 0) or 0
                 if iv is None or strike is None:
                     continue
-                if not (0.03 < float(iv) < 1.5):   # drop junk IVs
+                if not (0.03 < float(iv) < 1.5):  # drop junk IVs
                     continue
-                if (oi + vol) <= 0:                 # require a little liquidity
+                if (oi + vol) <= 0:  # require a little liquidity
                     continue
                 k = math.log(float(strike) / proxy_spot)
-                if abs(k) > 0.30:                   # keep the usable wing
+                if abs(k) > 0.30:  # keep the usable wing
                     continue
                 # use OTM side of each type to avoid deep-ITM noise
                 if kind == "C" and k < -0.02:
@@ -202,7 +202,9 @@ def _atm_iv_from_chain(chain, proxy_spot):
     for df in (chain.calls, chain.puts):
         if df is None or df.empty:
             continue
-        sub = df.dropna(subset=["strike", "impliedVolatility"]) if "impliedVolatility" in df else None
+        sub = (
+            df.dropna(subset=["strike", "impliedVolatility"]) if "impliedVolatility" in df else None
+        )
         if sub is None or sub.empty:
             continue
         idx = (sub["strike"] - proxy_spot).abs().idxmin()
@@ -284,6 +286,7 @@ def main():
 
     try:
         import os
+
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         with open(args.out, "w") as f:
             json.dump(snap, f, indent=2)

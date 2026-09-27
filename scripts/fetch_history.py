@@ -66,6 +66,7 @@ def main():
     }
 
     import os
+
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(payload, f)

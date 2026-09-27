@@ -12,7 +12,8 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "golden": "vitest run --config vitest.golden.config.ts"
   },
   "dependencies": {
     "react": "^19.2.7",

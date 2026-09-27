@@ -1,0 +1,111 @@
+[project]
+name = "eqd-desk"
+version = "0.2.0"
+description = "EQD Desk: an equity-index derivatives trader training simulator (greeks lab, strategy builder, exotics, market-making simulator)."
+readme = "README.md"
+authors = [{ name = "Alix Bernal", email = "pro.alixbernal@gmail.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+keywords = ["options", "black-scholes", "greeks", "derivatives", "streamlit", "education"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Intended Audience :: Education",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Topic :: Office/Business :: Financial :: Investment",
+  "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=2.5.3",
+    "pandas>=3.0.6",
+    "plotly>=7.1.0",
+    "streamlit>=1.64.0",
+]
+
+[project.scripts]
+eqd-desk = "eqd_desk.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.15,<0.13.0"]
+build-backend = "uv_build"
+
+# ---------------------------------------------------------------------------- tools
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["web"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort
+  "B",        # bugbear
+  "UP",       # pyupgrade
+  "SIM",      # simplify
+  "C4",       # comprehensions
+  "PT",       # pytest style
+  "NPY",      # numpy
+  "PERF",     # perf anti-patterns
+  "RUF",      # ruff-specific
+]
+ignore = [
+  # Greek letters and math symbols (σ, Δ, −, ×) are deliberate in docstrings: the code is
+  # meant to be read next to the formulas it implements.
+  "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["plotly.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+  "slow: Monte-Carlo heavy tests (deselect with '-m \"not slow\"')",
+  "app: Streamlit AppTest UI smoke tests",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["eqd_desk"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.2",
+    "mypy>=2.3.1",
+    "pandas-stubs>=3.0.5.260914",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.9",
+]
+scripts = [
+    "yfinance>=1.7.0",
+]
