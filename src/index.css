@@ -1,0 +1,99 @@
+/* Theme tokens + reset for the trading-terminal aesthetic. */
+:root {
+  --bg: #090d13;
+  --panel: #10161f;
+  --panel-2: #0c121a;
+  --panel-hi: #141c28;
+  --border: #1d2734;
+  --grid: #18212e;
+  --axis: #2a3645;
+
+  --text: #d4dded;
+  --text-dim: #74859b;
+
+  --accent: #36d39b; /* teal-green — current level / option value */
+  --accent-dim: rgba(54, 211, 155, 0.16);
+  --line: #5aa9ff; /* greek curve */
+  --pos: #3fd07f;
+  --neg: #ff5d6c;
+  --call: #36d39b;
+  --put: #ff8a5c;
+
+  --sans: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+#root {
+  width: 100%;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.accent {
+  color: var(--accent);
+}
+
+.pos {
+  color: var(--pos);
+}
+.neg {
+  color: var(--neg);
+}
+.zero {
+  color: var(--text-dim);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* thin scrollbars for the terminal feel */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
