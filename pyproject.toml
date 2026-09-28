@@ -18,9 +18,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
+    "altair>=6.0",
     "numpy>=2.5.3",
     "pandas>=3.0.6",
-    "plotly>=7.1.0",
     "streamlit>=1.64.0",
 ]
 
@@ -56,6 +56,9 @@ ignore = [
   # Greek letters and math symbols (σ, Δ, −, ×) are deliberate in docstrings: the code is
   # meant to be read next to the formulas it implements.
   "RUF001", "RUF002", "RUF003",
+  # "Yoda condition" heuristic treats any UPPERCASE name as a constant, so it misfires on
+  # the finance convention of single-letter variables (S, K, T): `i.S <= K` is not Yoda.
+  "SIM300",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -69,10 +72,6 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 warn_unreachable = true
-
-[[tool.mypy.overrides]]
-module = ["plotly.*"]
-ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["tests.*"]

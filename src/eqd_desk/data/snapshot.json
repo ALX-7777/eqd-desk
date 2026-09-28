@@ -1,0 +1,32 @@
+{
+  "asof": "2026-06-23",
+  "underlying": "spx",
+  "name": "S&P 500",
+  "currency": "USD",
+  "spot": 6312.45,
+  "r": 0.043,
+  "q": 0.013,
+  "realized_vol": 0.1118,
+  "atm_vol_30d": 0.146,
+  "skew": {
+    "atm": 0.146,
+    "slope": -0.48,
+    "curv": 0.62
+  },
+  "term_structure": [
+    { "t": 0.0833, "atm_iv": 0.139 },
+    { "t": 0.25, "atm_iv": 0.146 },
+    { "t": 0.5, "atm_iv": 0.152 },
+    { "t": 1.0, "atm_iv": 0.158 }
+  ],
+  "source_notes": [
+    "STATIC FALLBACK SEED — mid-2026 S&P 500 placeholder values, not live data.",
+    "Run `python scripts/fetch_snapshot.py --underlying spx --out src/data/snapshot.json` to refresh from Yahoo Finance.",
+    "ATM level anchored to VIX ~14.6; skew shape (log-moneyness slope/curv) is a parametric equity-skew fallback; r is a placeholder USD short rate."
+  ],
+  "tickers": {
+    "index_ticker": "^GSPC",
+    "vol_ticker": "^VIX",
+    "options_proxy": "SPY"
+  }
+}
