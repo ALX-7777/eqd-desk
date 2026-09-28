@@ -1,0 +1,43 @@
+# Script-level Streamlit config: it sits next to streamlit_app.py, so it applies however
+# the app is launched (eqd-desk CLI, `streamlit run`, uvx, Docker, Streamlit Cloud).
+# Palette mirrors the React app (web/src/index.css): a dark "trading terminal".
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#36d39b"             # accent: current level / option value
+backgroundColor = "#090d13"
+secondaryBackgroundColor = "#10161f" # panels
+codeBackgroundColor = "#0c121a"
+# Inline `code` is how Markdown gets the mono font for numerics (header strip, slider
+# readouts): keep it the body colour so colour stays reserved for meaning (pos/neg/accent).
+codeTextColor = "#d4dded"
+textColor = "#d4dded"
+linkColor = "#5aa9ff"
+borderColor = "#1d2734"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "6px"
+buttonRadius = "6px"
+
+font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+codeFontSize = "13px"
+
+# Semantic colours: P&L up/down, calls vs puts.
+greenColor = "#3fd07f"
+redColor = "#ff5d6c"
+blueColor = "#5aa9ff"
+orangeColor = "#ff8a5c"
+violetColor = "#a78bfa"
+yellowColor = "#fbbf24"
+grayColor = "#74859b"
+
+chartCategoricalColors = ["#5aa9ff", "#36d39b", "#ff8a5c", "#a78bfa", "#fbbf24", "#ff5d6c", "#74859b"]

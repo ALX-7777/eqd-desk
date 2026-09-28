@@ -1,0 +1,250 @@
+"""Behaviour of the shared widgets and education renderers inside a running script
+(``AppTest.from_function``): values shown equal the engine's, controls stay in sync."""
+
+from __future__ import annotations
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+from eqd_desk.app.ui.education import field_markdown
+from eqd_desk.content import (
+    ATTRIBUTION_TERMS,
+    EXOTIC_DOCS,
+    GREEK_DOCS,
+    KEY_RELATIONSHIPS,
+    SIM_CONCEPTS,
+    STRATEGY_DOCS,
+    markdown_safe,
+)
+from eqd_desk.content.exotics import EXOTIC_DOC_FIELD_LABELS
+from eqd_desk.content.greeks import GREEK_DOC_FIELD_LABELS, GREEK_GROUPS
+from eqd_desk.content.strategies import CUSTOM_STRUCTURE_NOTE, STRATEGY_DOC_FIELD_LABELS
+from eqd_desk.engine import GREEK_UNITS, BsmInputs, analyze_option
+
+from .conftest import DEFAULT_TIMEOUT
+
+pytestmark = pytest.mark.app
+
+
+def value_line(at: AppTest) -> str:
+    """The ``value=…`` markdown the test scripts print."""
+    return next(m.value for m in at.markdown if m.value.startswith("value="))
+
+
+# ------------------------------------------------------------------ number_slider
+
+
+def slider_script() -> None:
+    import streamlit as st
+
+    from eqd_desk.app.ui.widgets import number_slider, set_number
+
+    st.button("Reset", on_click=set_number, args=("t.S", 42.0))
+    if st.checkbox("Show", value=True):
+        v = number_slider(
+            "Spot",
+            key="t.S",
+            min_value=0.0,
+            max_value=200.0,
+            step=0.5,
+            default=100.0,
+            symbol="S",
+            display=lambda x: f"{x:.2f} USD",
+        )
+        st.markdown(f"value={v}")
+    n = number_slider(
+        "Observations", key="t.n", min_value=1, max_value=24, step=1, default=6, integer=True
+    )
+    st.markdown(f"obs={n!r}")
+    number_slider("Wing", key="t.w", min_value=0.0, max_value=1.0, step=0.01, compact=True)
+
+
+def run_slider_app() -> AppTest:
+    at = AppTest.from_function(slider_script, default_timeout=DEFAULT_TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_number_slider_starts_at_default_with_both_widgets() -> None:
+    at = run_slider_app()
+    assert at.slider(key="t.S__slider").value == 100.0
+    assert at.number_input(key="t.S__input").value == 100.0
+    assert value_line(at) == "value=100.0"
+    assert at.session_state["t.S"] == 100.0
+    assert any(m.value == "`100.00 USD`" for m in at.markdown)  # the header display
+    # compact: slider only, no numeric field
+    assert at.slider(key="t.w__slider").value == 0.0
+    with pytest.raises(KeyError):
+        at.number_input(key="t.w__input")
+
+
+def test_moving_the_slider_updates_the_field_and_the_value() -> None:
+    at = run_slider_app()
+    at.slider(key="t.S__slider").set_value(120.5).run()
+    assert at.number_input(key="t.S__input").value == 120.5
+    assert value_line(at) == "value=120.5"
+    assert any(m.value == "`120.50 USD`" for m in at.markdown)
+
+
+def test_typing_in_the_field_moves_the_slider() -> None:
+    at = run_slider_app()
+    at.number_input(key="t.S__input").set_value(63.5).run()
+    assert at.slider(key="t.S__slider").value == 63.5
+    assert value_line(at) == "value=63.5"
+
+
+def test_set_number_from_a_callback_moves_both_widgets() -> None:
+    at = run_slider_app()
+    at.slider(key="t.S__slider").set_value(150.0).run()
+    at.button[0].click().run()
+    assert at.slider(key="t.S__slider").value == 42.0
+    assert at.number_input(key="t.S__input").value == 42.0
+    assert value_line(at) == "value=42.0"
+
+
+def test_value_survives_the_widgets_being_unmounted() -> None:
+    at = run_slider_app()
+    at.slider(key="t.S__slider").set_value(77.0).run()
+    at.checkbox[0].uncheck().run()  # widgets gone (like a page switch)
+    assert not any(m.value.startswith("value=") for m in at.markdown)
+    at.checkbox[0].check().run()
+    assert at.slider(key="t.S__slider").value == 77.0
+    assert value_line(at) == "value=77.0"
+
+
+def test_integer_slider_returns_whole_numbers() -> None:
+    at = run_slider_app()
+    assert any(m.value == "obs=6" for m in at.markdown)
+    at.number_input(key="t.n__input").set_value(9).run()
+    assert at.slider(key="t.n__slider").value == 9
+    assert any(m.value == "obs=9" for m in at.markdown)
+
+
+# ------------------------------------------------------------------ choices
+
+
+def choice_script() -> None:
+    import streamlit as st
+
+    from eqd_desk.app.ui.widgets import choice, greek_picker, option_type_toggle
+
+    t = option_type_toggle(key="t.type")
+    x = choice("X axis", {"S": "Spot", "sigma": "Vol", "T": "Time"}, key="t.x", default="S")
+    g = greek_picker(key="t.greek")
+    st.markdown(f"value={t}|{x}|{g}")
+
+
+def test_choice_widgets_return_values_not_labels() -> None:
+    at = AppTest.from_function(choice_script, default_timeout=DEFAULT_TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    assert value_line(at) == "value=call|S|delta"
+    at.button_group(key="t.type").set_value("put").run()
+    at.button_group(key="t.x").set_value("sigma").run()
+    at.button_group(key="t.greek").set_value("gamma").run()
+    assert value_line(at) == "value=put|sigma|gamma"
+    # the chips show the greeks' display labels, price first
+    assert list(at.button_group(key="t.greek").options) == [u.label for u in GREEK_UNITS.values()]
+
+
+# ------------------------------------------------------------------ readouts
+
+
+def readout_script() -> None:
+    import streamlit as st
+
+    from eqd_desk.app.ui.format import fmt_money
+    from eqd_desk.app.ui.widgets import greek_readout, hero_number, section_header
+    from eqd_desk.engine import BsmInputs, analyze_option
+
+    a = analyze_option(BsmInputs(S=100, K=100, T=1, r=0.05, q=0.01, sigma=0.2), "call")
+    slot = section_header("Price & greeks", badge="CALL")
+    with slot:
+        st.button("Inside the slot")
+    hero_number("Premium (USD)", fmt_money(a.reported.price), detail="time value only")
+    hero_number("P&L (USD)", "+17,959.06", tone="pos")
+    greek_readout(a.reported, selected="vega")
+
+
+def test_greek_readout_shows_the_engine_values() -> None:
+    at = AppTest.from_function(readout_script, default_timeout=DEFAULT_TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    a = analyze_option(BsmInputs(S=100, K=100, T=1, r=0.05, q=0.01, sigma=0.2), "call")
+    table = at.table[0].value
+    groups = [g.title for g in GREEK_GROUPS]
+    greeks = table[~table["label"].isin(groups)]
+    keys = [k for g in GREEK_GROUPS for k in g.keys]
+    assert list(greeks["label"]) == [GREEK_UNITS[k].label for k in keys]
+    assert list(greeks["value"]) == [getattr(a.reported, k) for k in keys]
+    assert list(table[table["label"].isin(groups)]["label"]) == groups
+
+    premium, pnl = at.metric
+    assert premium.label == "Premium (USD)"
+    assert premium.value == f"{a.reported.price:,.2f}"
+    assert premium.proto.delta_description == "time value only"
+    assert pnl.value == ":green[+17,959.06]"
+    assert any(m.value == "**Price & greeks**" for m in at.markdown)
+    assert any("CALL" in m.value and "badge" in m.value for m in at.markdown)
+    assert at.button[0].label == "Inside the slot"
+
+
+# ------------------------------------------------------------------ education
+
+
+def education_script() -> None:
+    from eqd_desk.app.ui.education import (
+        attribution_terms,
+        exotic_doc_card,
+        exotic_greek_card,
+        greek_doc_card,
+        key_relationships,
+        learn_header,
+        sim_concepts,
+        strategy_doc_card,
+    )
+
+    learn_header(badge="per $1 spot")
+    greek_doc_card("delta")
+    key_relationships()
+    strategy_doc_card("risk-reversal", title="Risk reversal")
+    strategy_doc_card(None, title="Custom structure")
+    exotic_doc_card("barrier")
+    exotic_greek_card("gamma")
+    sim_concepts()
+    attribution_terms()
+
+
+def test_education_renders_content_verbatim_and_escaped() -> None:
+    at = AppTest.from_function(education_script, default_timeout=DEFAULT_TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    texts = [m.value for m in at.markdown]
+
+    delta = GREEK_DOCS["delta"]
+    assert any(t == f"##### {markdown_safe(delta.title)}" for t in texts)
+    for g_field, g_label in GREEK_DOC_FIELD_LABELS.items():
+        assert field_markdown(g_label, getattr(delta, g_field)) in texts
+    # "$1" must reach st.markdown escaped, or Streamlit would typeset LaTeX
+    assert any("\\$1 move in spot" in t for t in texts)
+    assert not any("$" in t.replace("\\$", "") for t in texts)
+
+    rr = STRATEGY_DOCS["risk-reversal"]
+    for s_field, s_label in STRATEGY_DOC_FIELD_LABELS.items():
+        assert field_markdown(s_label, getattr(rr, s_field)) in texts
+    assert any(markdown_safe(CUSTOM_STRUCTURE_NOTE) in t for t in texts)
+
+    barrier = EXOTIC_DOCS["barrier"]
+    for e_field, e_label in EXOTIC_DOC_FIELD_LABELS.items():
+        assert field_markdown(e_label, getattr(barrier, e_field)) in texts
+    gamma = GREEK_DOCS["gamma"]
+    assert field_markdown("Measures", gamma.measures) in texts
+    assert field_markdown("On the desk", gamma.desk) not in texts  # short card
+
+    expanders = [e.label for e in at.expander]
+    assert expanders == [markdown_safe(r.title) for r in KEY_RELATIONSHIPS] + [
+        markdown_safe(c.title) for c in SIM_CONCEPTS
+    ]
+    for term in ATTRIBUTION_TERMS:
+        assert field_markdown(term.label, term.note) in texts

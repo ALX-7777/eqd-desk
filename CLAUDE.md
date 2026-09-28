@@ -36,7 +36,7 @@ SX5E:  { indexTicker: "^STOXX50E",  volIndexTicker: "V2TX.DE", optionsProxy: "FE
 
 ## Data seeding
 
-Index option chains (`^GSPC`, `^STOXX50E`) are **not** reliably available through yfinance. Do **not** build anything that depends on fetching them. Instead, a Python script in `/scripts` (`fetch_snapshot.py`, already provided, `--underlying spx|sx5e`) produces a JSON snapshot the app loads:
+Index option chains (`^GSPC`, `^STOXX50E`) are **not** reliably available through yfinance. Do **not** build anything that depends on fetching them. Instead, a Python script in `/scripts` (`fetch_snapshot.py`, already provided, `--underlying spx|sx5e`) produces a JSON snapshot both apps load (written to `src/eqd_desk/data/` and mirrored to `web/src/data/`):
 
 - **Spot + realized vol:** the `indexTicker` (e.g. `^GSPC`) — the real index level; daily history → realized vol.
 - **ATM implied-vol anchor:** the `volIndexTicker` (e.g. `^VIX`, in vol points; 16 → 0.16). Sets the 30-day at-the-money level.
@@ -50,27 +50,45 @@ Snapshot JSON shape: `{ asof, underlying, currency, spot, r, q, realized_vol, at
 
 ## Tech stack
 
-- **React + TypeScript**, scaffolded with **Vite**.
-- **Charting:** pick one interactive library suited to financial plots (Recharts is fine to start; Plotly/visx are alternatives) and use it consistently.
-- **State:** keep it simple — React state, lift to Zustand only if it gets unwieldy.
-- **Engine is pure TypeScript** in `/src/engine`, with **zero UI dependencies** and full unit-test coverage.
-- **Python** in `/scripts` for the yfinance snapshot generator, writing JSON into `/src/data`.
-- **Aesthetic:** a clean, dense "trading terminal" feel — dark background, monospace for numerics, tight grids, fast-reading layout. Numbers are the product; make them legible and aligned.
+The project has **two front-ends over the same model**, kept numerically identical:
+
+- **Python / Streamlit (primary):** package `eqd_desk` (uv project, src layout, Python ≥ 3.12).
+  - **Engine is pure Python** in `src/eqd_desk/engine`: zero UI dependencies, scalar `math`
+    for closed forms, numpy for Monte Carlo. Seeded randomness only via `engine/rng.py`
+    (a bit-exact port of the TS mulberry32 + Marsaglia polar sampler).
+  - **UI:** Streamlit multipage app in `src/eqd_desk/app` (`st.navigation`, `app_pages/`,
+    shared helpers in `ui/`), **Altair** charts, theme in the script-level
+    `app/.streamlit/config.toml`.
+  - Tooling: uv, ruff (lint + format), mypy `--strict`, pytest + Hypothesis + Streamlit
+    `AppTest`, Docker (uv multi-stage), GitHub Actions.
+- **React / TypeScript (original, in `web/`):** Vite + React + Recharts; engine in
+  `web/src/engine`. It is the reference implementation: the Python engine is tested against
+  golden values exported from it.
+- **Aesthetic:** a clean, dense "trading terminal" feel: dark background, monospace for
+  numerics, tight grids, fast-reading layout. Numbers are the product; make them legible and aligned.
 
 ---
 
 ## Folder structure
 
 ```
-/src/engine      pure functions: bsm pricing, greeks (all orders), strategies,
-                 exotics, market simulation (paths), pnl attribution. Fully tested.
-/src/components   UI: greeks lab, strategy builder, exotics, simulator, education panels
-/src/data         seed snapshot (JSON from the script) and vol-surface construction
-/scripts          fetch_snapshot.py (yfinance, --underlying spx|sx5e)
-/docs             design notes and the learning guide (for the human, not instructions)
+src/eqd_desk/engine    pure functions: bsm, greeks (all orders), reporting (desk units),
+                       rng, strategy + presets, exotics/, sim/ (market, rfq, quote, book,
+                       pnl attribution, replay, advisor). Fully tested.
+src/eqd_desk/data      seed snapshot + history (package data), vol surface, underlying config
+src/eqd_desk/content   all in-app teaching text (verbatim from the React app)
+src/eqd_desk/app       Streamlit app: streamlit_app.py (entry), app_pages/, ui/ helpers
+src/eqd_desk/cli.py    `eqd-desk` console script (streamlit run the packaged app)
+tests/                 engine/, data/, content/, parity/ (golden values from the TS
+                       engine), ui/ (pure UI helpers), app/ (Streamlit AppTest)
+web/                   the original React/TypeScript app (+ web/scripts/golden exporters)
+scripts/               fetch_snapshot.py, fetch_history.py (yfinance; offline to the app)
+docs/                  design notes and the learning guide (for the human, not instructions)
 ```
 
-Co-locate tests with the engine code they cover.
+**Parity rule:** when you change engine behaviour, change it in BOTH engines, then regenerate
+the goldens (`cd web && npm run golden`) and keep `tests/parity` green. CI fails if the
+committed goldens drift from the TS engine.
 
 ---
 
@@ -144,36 +162,43 @@ A simulated index path (GBM → Heston), a clock you tick forward, and randomise
 
 ## Conventions & quality bar
 
-- TypeScript **strict** mode. Engine functions are **pure** and documented with the formula they implement.
-- Every pricing/greek function has tests (finite-difference cross-check + reference values) before it's considered done.
-- 2-space indentation. Prefer clarity over cleverness; this is a codebase meant to be *read and learned from*.
+- Python: `mypy --strict` and ruff clean; `from __future__ import annotations`; frozen, slotted
+  dataclasses for value types; `Literal` for string unions; docstrings state the formula and
+  units. TypeScript: **strict** mode, 2-space indentation.
+- Engine functions are **pure** and documented with the formula they implement.
+- Every pricing/greek function has tests (finite-difference cross-check + reference values +
+  golden parity with the TS engine) before it's considered done.
+- UI: teaching text only from `eqd_desk.content` (through `markdown_safe()`); pure logic lives in
+  modules with plain pytest tests; UI behaviour is covered by `AppTest`.
+- Prefer clarity over cleverness; this is a codebase meant to be *read and learned from*.
 - Be explicit about units, currency, and day-count everywhere a number could be ambiguous.
 
 ## Commands
 
-Requires Node.js (≥ 20; built on 24 LTS). On this machine Node lives at
-`C:\Program Files\nodejs` — if a shell can't find `node`, prepend that to PATH.
+Python (needs [uv](https://docs.astral.sh/uv/)):
 ```
-npm install                                  install dependencies
-npm run dev                                  start the dev server (http://localhost:5173)
-npm run build                                type-check (tsc -b) + production build
-npm run preview                              serve the production build
-npm test                                     run the unit tests (vitest run)
-npm run test:watch                           tests in watch mode
-npm run typecheck                            type-check only (tsc -b --noEmit)
-npm run lint                                 oxlint
-python scripts/fetch_snapshot.py --underlying spx --out src/data/snapshot.json
-                                             refresh the seed snapshot (needs:
-                                             pip install yfinance pandas numpy)
-python scripts/fetch_history.py --years 8 --out src/data/history.json
-                                             refresh the simulator's historical-replay
-                                             data (real ^GSPC + ^VIX daily)
+uv sync                                      create .venv with all dev tools
+uv run eqd-desk                              run the Streamlit app (http://localhost:8501)
+uv run pytest                                all tests (add -m "not slow" to skip heavy MC)
+uv run pytest --cov                          with coverage
+uv run ruff format . && uv run ruff check .  format + lint
+uv run mypy                                  strict type-check
+uv run --group scripts python scripts/fetch_snapshot.py --underlying spx
+                                             refresh the seed snapshot (writes
+                                             src/eqd_desk/data and mirrors web/src/data)
+uv run --group scripts python scripts/fetch_history.py --years 8
+                                             refresh the historical-replay data
+docker compose up --build                    run the app in Docker (http://localhost:8501)
 ```
 
-Stack: Vite 8 + React 19 + TypeScript (strict), Vitest 4 + jsdom, Recharts 3, oxlint.
-Playwright (chromium) is a dev dependency used for visual smoke screenshots
-(`npx playwright install chromium` once).
+React app (Node ≥ 20; on this machine Node lives at `C:\Program Files\nodejs`):
+```
+cd web
+npm install / npm run dev (http://localhost:5173) / npm test / npm run build / npm run lint
+npm run golden                               regenerate tests/parity/golden/*.json from the TS engine
+```
 
-## How to start
+## Status
 
-Begin in **plan mode**: propose how you'll scaffold the app and build Phase 1, and wait for my approval before large changes. Then scaffold Vite + React + TypeScript, build the `/src/engine` pricing and greeks with their tests, wire in the seed snapshot, and then the Phase 1 UI. We tackle Phases 2–4 only after Phase 1 works and I've reviewed it.
+All four phases are implemented in both front-ends. Change one area at a time, keep the parity
+tests green, and verify UI changes visually (Playwright is available in `web/node_modules`).
