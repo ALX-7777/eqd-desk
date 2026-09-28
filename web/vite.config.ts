@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // GitHub Pages serves the app from /<repo>/; the Pages workflow sets VITE_BASE.
+  base: process.env.VITE_BASE ?? '/',
   plugins: [react()],
   test: {
     // Engine tests are pure TS (node-friendly), but jsdom lets the same runner

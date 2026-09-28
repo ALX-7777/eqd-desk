@@ -38,3 +38,6 @@ build/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Throwaway Playwright screenshot scripts
+web/.shots/

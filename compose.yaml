@@ -1,0 +1,8 @@
+# docker compose up --build   → http://localhost:8501
+services:
+  eqd-desk:
+    build: .
+    image: eqd-desk:local
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

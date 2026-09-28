@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }} · lint, types, tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install (locked)
+        run: uv sync --locked
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+      - name: Mypy (strict)
+        run: uv run mypy
+      - name: Pytest + coverage
+        run: uv run pytest --cov --cov-report=term --cov-report=xml
+      - name: Upload coverage report
+        if: matrix.python == '3.13'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  web:
+    name: React app · lint, types, tests, build, golden freshness
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Golden values are in sync with the TypeScript engine
+        # Regenerates tests/parity/golden/*.json from the TS engine; any diff means the
+        # committed goldens (which the Python parity tests use) are stale.
+        run: |
+          npm run golden
+          git diff --exit-code -- ../tests/parity/golden
+
+  docker:
+    name: Docker image · build and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: eqd-desk:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Container serves the app
+        run: |
+          docker run -d --name eqd -p 8501:8501 eqd-desk:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8501/_stcore/health; then echo; break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8501/_stcore/health
+          curl -fsS http://localhost:8501/ | grep -qi "<title>"
+      - name: Container logs
+        if: always()
+        run: docker logs eqd || true
