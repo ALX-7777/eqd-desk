@@ -1,22 +1,20 @@
 name: Deploy React app to GitHub Pages
 
 # The original React/TypeScript app is a static site: publish it on GitHub Pages so it runs
-# in any browser (phone included) with no server: https://<owner>.github.io/<repo>/
+# in any browser (phone included) with no server: https://alx-7777.github.io/eqd-desk/
+#
+# Reusable: only CI (ci.yml) calls it, after every check passed on main. To redeploy by hand,
+# run the CI workflow on main ("Run workflow").
+#
+# One-time setup: Settings > Pages > Build and deployment > Source = "GitHub Actions".
 
 on:
-  push:
-    branches: [main]
-    paths: ["web/**", ".github/workflows/pages.yml"]
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
   pages: write
   id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   build:
@@ -43,6 +41,10 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # One deployment at a time, and never cancel one in progress.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

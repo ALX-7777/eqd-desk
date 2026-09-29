@@ -36,8 +36,9 @@ htmlcov/
 build/
 *.egg-info/
 
-# Streamlit
-.streamlit/secrets.toml
+# Streamlit secrets, at the repo root AND next to the packaged entrypoint
+# (src/eqd_desk/app/.streamlit/, where Streamlit also looks): never commit them.
+**/.streamlit/secrets.toml
 
 # Throwaway Playwright screenshot scripts
 web/.shots/

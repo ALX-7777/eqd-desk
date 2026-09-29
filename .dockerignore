@@ -6,5 +6,7 @@
 !LICENSE
 !src/
 
+# ... minus anything local that must never reach an image layer.
+**/.streamlit/secrets.toml
 **/__pycache__
 **/*.py[cod]

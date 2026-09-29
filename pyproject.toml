@@ -24,12 +24,24 @@ dependencies = [
     "streamlit>=1.64.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ALX-7777/eqd-desk"
+Repository = "https://github.com/ALX-7777/eqd-desk"
+Issues = "https://github.com/ALX-7777/eqd-desk/issues"
+Documentation = "https://github.com/ALX-7777/eqd-desk/blob/main/docs/TRADING_GUIDE.md"
+
 [project.scripts]
 eqd-desk = "eqd_desk.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# Streamlit reads secrets from the entrypoint's own `.streamlit/` directory too
+# (src/eqd_desk/app/.streamlit/), next to the theme that DOES ship. Never package a local
+# secrets file: source-exclude applies to the sdist and to the wheel.
+source-exclude = ["**/.streamlit/secrets.toml"]
 
 # ---------------------------------------------------------------------------- tools
 
@@ -60,9 +72,6 @@ ignore = [
   # the finance convention of single-letter variables (S, K, T): `i.S <= K` is not Yoda.
   "SIM300",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PLR2004"]
 
 [tool.ruff.format]
 docstring-code-format = true

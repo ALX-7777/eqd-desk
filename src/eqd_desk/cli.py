@@ -2,7 +2,7 @@
 
     eqd-desk                          # → http://localhost:8501
     eqd-desk --server.port 8080       # any `streamlit run` option is passed through
-    uvx --from git+https://github.com/<owner>/<repo> eqd-desk
+    uvx --from git+https://github.com/ALX-7777/eqd-desk eqd-desk   # no clone needed
 
 The app, its pages and its theme (``app/.streamlit/config.toml``, a script-level config)
 ship inside the package, so this works from any working directory.

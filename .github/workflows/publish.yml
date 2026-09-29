@@ -1,17 +1,17 @@
 name: Publish image
 
 # Builds a multi-arch (amd64 + arm64) image and pushes it to GitHub Container Registry:
-#   docker run --rm -p 8501:8501 ghcr.io/<owner>/<repo>:latest
+#   docker run --rm -p 8501:8501 ghcr.io/alx-7777/eqd-desk:latest
+#
+# Reusable: only CI (ci.yml) calls it, after lint, types, tests and the Docker smoke test all
+# passed, for a push to main (:latest, :sha-…) or a v* tag (:X.Y.Z, :X.Y). To publish by hand,
+# run the CI workflow on main ("Run workflow").
+#
+# One-time setup: a new GHCR package is PRIVATE. Make it public (Package settings > Change
+# visibility) so that anyone can `docker run` it.
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  workflow_dispatch:
-
-concurrency:
-  group: publish-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 permissions:
   contents: read

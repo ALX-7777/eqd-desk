@@ -156,7 +156,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "series": series,
     }
 
-    for path in write_outputs(json.dumps(payload), args.out, mirror):
+    text = json.dumps(payload) + "\n"  # compact (one line), with a final newline
+    for path in write_outputs(text, args.out, mirror):
         print(f"Wrote {len(series)} daily points -> {path}")
     print(f"Range: {series[0]['date']} .. {series[-1]['date']}")
 

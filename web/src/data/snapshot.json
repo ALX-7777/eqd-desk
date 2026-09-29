@@ -21,7 +21,7 @@
   ],
   "source_notes": [
     "STATIC FALLBACK SEED — mid-2026 S&P 500 placeholder values, not live data.",
-    "Run `python scripts/fetch_snapshot.py --underlying spx --out src/data/snapshot.json` to refresh from Yahoo Finance.",
+    "Run `uv run --group scripts python scripts/fetch_snapshot.py --underlying spx` to refresh from Yahoo Finance.",
     "ATM level anchored to VIX ~14.6; skew shape (log-moneyness slope/curv) is a parametric equity-skew fallback; r is a placeholder USD short rate."
   ],
   "tickers": {

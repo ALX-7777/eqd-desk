@@ -97,6 +97,7 @@ def test_snapshot_main_writes_output_and_mirror(
     fetch_snapshot.main(["--out", str(out), "--mirror", str(mirror)])
     assert out.read_bytes() == mirror.read_bytes()
     assert b"\r\n" not in out.read_bytes()  # LF line endings on every platform
+    assert out.read_bytes().endswith(b"}\n")  # one final newline (pre-commit's end-of-file-fixer)
     assert json.loads(out.read_text("utf-8")) == FAKE_SNAPSHOT
     validate_snapshot(json.loads(out.read_text("utf-8")))  # the app accepts what it writes
 
@@ -126,6 +127,7 @@ def test_history_main_writes_output_and_mirror(
     mirror.parent.mkdir()
     fetch_history.main(["--out", str(out), "--mirror", str(mirror)])
     assert out.read_bytes() == mirror.read_bytes()
+    assert out.read_bytes().endswith(b"}\n")  # one final newline (pre-commit's end-of-file-fixer)
     h = parse_history(json.loads(out.read_text("utf-8")))
     assert h.meta.count == fetch_history.MIN_POINTS
     assert h.series[0].date == "2020-01-06"

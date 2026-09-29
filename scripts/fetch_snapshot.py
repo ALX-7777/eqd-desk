@@ -380,7 +380,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print("  (custom --out: the React copy is not mirrored; add --mirror PATH to write one)")
 
     snap = build_snapshot(args.underlying)
-    text = json.dumps(snap, indent=2)
+    text = json.dumps(snap, indent=2) + "\n"  # a final newline, as text files should end
 
     try:
         for path in write_outputs(text, args.out, mirror):
@@ -388,7 +388,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     except OSError as exc:
         print(f"\nCould not write {args.out}: {exc}\nSnapshot follows:")
 
-    print(text)
+    print(text, end="")
 
 
 if __name__ == "__main__":

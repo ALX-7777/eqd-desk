@@ -5,6 +5,10 @@
 #   docker build -t eqd-desk .
 #   docker run --rm -p 8501:8501 eqd-desk        # → http://localhost:8501
 #
+# To serve on another container port, set it through the environment, not `--server.port`,
+# so that the HEALTHCHECK below probes the same port:
+#   docker run --rm -e STREAMLIT_SERVER_PORT=8080 -p 8080:8080 eqd-desk
+#
 # Two stages: `builder` resolves the locked environment with uv; the runtime stage copies
 # only the virtualenv (no uv, no build cache, no sources) and runs as a non-root user.
 
@@ -57,7 +61,8 @@ USER app
 WORKDIR /home/app
 EXPOSE 8501
 
+# Probes the port the server was told to use (STREAMLIT_SERVER_PORT), not a fixed 8501.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4)"]
+  CMD ["python", "-c", "import os, urllib.request as u; u.urlopen('http://127.0.0.1:%s/_stcore/health' % os.environ.get('STREAMLIT_SERVER_PORT', '8501'), timeout=4)"]
 
 ENTRYPOINT ["eqd-desk"]

@@ -1,14 +1,23 @@
 name: CI
 
+# Checks every push and pull request, then ships ONLY what passed them all:
+#   python, web, docker  →  publish (GHCR image: main and v* tags)
+#                        →  pages   (React app on GitHub Pages: main)
+# Delivery lives in reusable workflows (publish.yml, pages.yml) that only this file calls, so
+# a red commit can never push an image or redeploy the site.
+
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
+# A newer push to a pull request cancels its stale run. Runs on main and on release tags are
+# never cancelled mid-way (a newer one waits), so an image push or a Pages deploy completes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -63,11 +72,18 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Golden values are in sync with the TypeScript engine
-        # Regenerates tests/parity/golden/*.json from the TS engine; any diff means the
-        # committed goldens (which the Python parity tests use) are stale.
+        # Regenerates tests/parity/golden/*.json from the TS engine. Any change means the
+        # committed goldens (which the Python parity tests use) are stale. `git status`, not
+        # `git diff`, so a NEW golden file that was never committed fails the gate too.
         run: |
           npm run golden
-          git diff --exit-code -- ../tests/parity/golden
+          changes="$(git status --porcelain -- ../tests/parity/golden)"
+          if [ -n "$changes" ]; then
+            echo "::error::tests/parity/golden is stale: run 'npm run golden' in web/ and commit the result."
+            echo "$changes"
+            git --no-pager diff --stat -- ../tests/parity/golden
+            exit 1
+          fi
 
   docker:
     name: Docker image · build and smoke test
@@ -85,12 +101,53 @@ jobs:
       - name: Container serves the app
         run: |
           docker run -d --name eqd -p 8501:8501 eqd-desk:ci
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://localhost:8501/_stcore/health; then echo; break; fi
             sleep 2
           done
           curl -fsS http://localhost:8501/_stcore/health
           curl -fsS http://localhost:8501/ | grep -qi "<title>"
+      - name: Every page runs inside the image
+        # The health check above never executes the app script. Run every page headless
+        # (Streamlit's AppTest) against the INSTALLED package, so packaging-only breakage that
+        # the source-tree tests cannot see (package data missing from the wheel, a gap in the
+        # .dockerignore allowlist) fails here instead of in a published image.
+        run: |
+          docker run --rm -i --entrypoint python eqd-desk:ci - <<'EOF'
+          from streamlit.testing.v1 import AppTest
+
+          from eqd_desk.app.ui.nav import PAGES
+          from eqd_desk.cli import APP_SCRIPT
+
+          at = AppTest.from_file(str(APP_SCRIPT), default_timeout=120).run()
+          assert not at.exception, (PAGES[0].file, at.exception)
+          print("ok", PAGES[0].file)
+          for spec in PAGES[1:]:
+              at.switch_page(spec.file).run()
+              assert not at.exception, (spec.file, at.exception)
+              print("ok", spec.file)
+          EOF
       - name: Container logs
         if: always()
         run: docker logs eqd || true
+
+  publish:
+    name: Publish image
+    needs: [python, web, docker]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish.yml
+
+  pages:
+    name: Deploy React app
+    needs: [python, web, docker]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
