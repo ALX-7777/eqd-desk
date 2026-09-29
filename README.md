@@ -4,6 +4,9 @@
 ![Python 3.12 | 3.13](https://img.shields.io/badge/python-3.12%20%7C%203.13-3776ab)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
+**Try it live: <https://eqd-desk.streamlit.app>** (no install, works on a phone) ·
+original React version: <https://alx-7777.github.io/eqd-desk/>
+
 A training desk for **equity-index derivatives market-making**, built for EQD trading
 interview prep. It replays the daily work of an index options market-maker on the S&P 500
 (SPX, with Euro Stoxx 50 as a one-flag alternative): price a vanilla and read its greeks,
@@ -59,10 +62,11 @@ follows: `docker run --rm -e STREAMLIT_SERVER_PORT=8080 -p 8080:8080 ghcr.io/alx
 
 <img src="docs/images/phone.png" alt="Greeks lab on a phone" width="220" align="right">
 
-- **Streamlit Community Cloud (free).** Sign in at [share.streamlit.io](https://share.streamlit.io)
-  with GitHub, choose *Create app*, pick this repository, branch `main` and main file path
-  `src/eqd_desk/app/streamlit_app.py`, then *Deploy*. Dependencies come from `uv.lock`; the
-  theme ships next to the entrypoint. You get a public URL that works on any device.
+- **The Streamlit app** runs on Streamlit Community Cloud at <https://eqd-desk.streamlit.app>
+  and redeploys on every push to `main`. To host your own copy (free): sign in at
+  [share.streamlit.io](https://share.streamlit.io) with GitHub, choose *Create app*, pick your
+  fork, branch `main` and main file path `src/eqd_desk/app/streamlit_app.py`, then *Deploy*.
+  Dependencies come from `uv.lock`; the theme ships next to the entrypoint.
 - **The original React app** is a static site, deployed by CI to GitHub Pages:
   <https://alx-7777.github.io/eqd-desk/>.
 
