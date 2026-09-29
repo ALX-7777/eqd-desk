@@ -7,6 +7,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from eqd_desk.app.ui.education import field_markdown
+from eqd_desk.app.ui.widgets import slider_keys
 from eqd_desk.content import (
     ATTRIBUTION_TERMS,
     EXOTIC_DOCS,
@@ -21,7 +22,7 @@ from eqd_desk.content.greeks import GREEK_DOC_FIELD_LABELS, GREEK_GROUPS
 from eqd_desk.content.strategies import CUSTOM_STRUCTURE_NOTE, STRATEGY_DOC_FIELD_LABELS
 from eqd_desk.engine import GREEK_UNITS, BsmInputs, analyze_option
 
-from .conftest import DEFAULT_TIMEOUT
+from .conftest import DEFAULT_TIMEOUT, field_wkey, slider_wkey, wkey
 
 pytestmark = pytest.mark.app
 
@@ -68,56 +69,76 @@ def run_slider_app() -> AppTest:
 
 def test_number_slider_starts_at_default_with_both_widgets() -> None:
     at = run_slider_app()
-    assert at.slider(key="t.S__slider").value == 100.0
-    assert at.number_input(key="t.S__input").value == 100.0
+    assert at.slider(key=slider_wkey(at, "t.S")).value == 100.0
+    assert at.number_input(key=field_wkey(at, "t.S")).value == 100.0
     assert value_line(at) == "value=100.0"
     assert at.session_state["t.S"] == 100.0
     assert any(m.value == "`100.00 USD`" for m in at.markdown)  # the header display
     # compact: slider only, no numeric field
-    assert at.slider(key="t.w__slider").value == 0.0
+    assert at.slider(key=slider_wkey(at, "t.w")).value == 0.0
     with pytest.raises(KeyError):
-        at.number_input(key="t.w__input")
+        at.number_input(key=field_wkey(at, "t.w"))
+
+
+def test_number_slider_widgets_are_created_at_the_current_value() -> None:
+    """Remount safety: each widget's proto default IS the current value (a widget the
+    frontend remounts restarts there, not at min_value), and the widget keys are derived
+    keys, never the canonical one."""
+    at = run_slider_app()
+    at.slider(key=slider_wkey(at, "t.S")).set_value(120.5).run()
+    slider = at.slider(key=slider_wkey(at, "t.S"))
+    field = at.number_input(key=field_wkey(at, "t.S"))
+    assert list(slider.proto.default) == [120.5]
+    assert field.proto.default == 120.5
+    assert slider.key == slider_wkey(at, "t.S")
+    assert field.key == field_wkey(at, "t.S")
+    assert str(slider.key).startswith(slider_keys("t.S")[0])  # never the canonical "t.S"
+    assert str(field.key).startswith(slider_keys("t.S")[1])
 
 
 def test_moving_the_slider_updates_the_field_and_the_value() -> None:
     at = run_slider_app()
-    at.slider(key="t.S__slider").set_value(120.5).run()
-    assert at.number_input(key="t.S__input").value == 120.5
+    slider_before = slider_wkey(at, "t.S")
+    at.slider(key=slider_before).set_value(120.5).run()
+    assert at.number_input(key=field_wkey(at, "t.S")).value == 120.5
+    assert slider_wkey(at, "t.S") == slider_before  # the widget in use is not remounted
     assert value_line(at) == "value=120.5"
     assert any(m.value == "`120.50 USD`" for m in at.markdown)
 
 
 def test_typing_in_the_field_moves_the_slider() -> None:
     at = run_slider_app()
-    at.number_input(key="t.S__input").set_value(63.5).run()
-    assert at.slider(key="t.S__slider").value == 63.5
+    field_before = field_wkey(at, "t.S")
+    at.number_input(key=field_before).set_value(63.5).run()
+    assert at.slider(key=slider_wkey(at, "t.S")).value == 63.5
+    assert field_wkey(at, "t.S") == field_before
     assert value_line(at) == "value=63.5"
 
 
 def test_set_number_from_a_callback_moves_both_widgets() -> None:
     at = run_slider_app()
-    at.slider(key="t.S__slider").set_value(150.0).run()
+    at.slider(key=slider_wkey(at, "t.S")).set_value(150.0).run()
     at.button[0].click().run()
-    assert at.slider(key="t.S__slider").value == 42.0
-    assert at.number_input(key="t.S__input").value == 42.0
+    assert at.slider(key=slider_wkey(at, "t.S")).value == 42.0
+    assert at.number_input(key=field_wkey(at, "t.S")).value == 42.0
     assert value_line(at) == "value=42.0"
 
 
 def test_value_survives_the_widgets_being_unmounted() -> None:
     at = run_slider_app()
-    at.slider(key="t.S__slider").set_value(77.0).run()
+    at.slider(key=slider_wkey(at, "t.S")).set_value(77.0).run()
     at.checkbox[0].uncheck().run()  # widgets gone (like a page switch)
     assert not any(m.value.startswith("value=") for m in at.markdown)
     at.checkbox[0].check().run()
-    assert at.slider(key="t.S__slider").value == 77.0
+    assert at.slider(key=slider_wkey(at, "t.S")).value == 77.0
     assert value_line(at) == "value=77.0"
 
 
 def test_integer_slider_returns_whole_numbers() -> None:
     at = run_slider_app()
     assert any(m.value == "obs=6" for m in at.markdown)
-    at.number_input(key="t.n__input").set_value(9).run()
-    assert at.slider(key="t.n__slider").value == 9
+    at.number_input(key=field_wkey(at, "t.n")).set_value(9).run()
+    assert at.slider(key=slider_wkey(at, "t.n")).value == 9
     assert any(m.value == "obs=9" for m in at.markdown)
 
 
@@ -127,25 +148,97 @@ def test_integer_slider_returns_whole_numbers() -> None:
 def choice_script() -> None:
     import streamlit as st
 
-    from eqd_desk.app.ui.widgets import choice, greek_picker, option_type_toggle
+    from eqd_desk.app.ui.widgets import choice, greek_picker, option_type_toggle, toggle
 
+    def reset() -> None:  # plain writes of the canonical keys, like a page's Reset
+        st.session_state["t.type"] = "call"
+        st.session_state["t.greek"] = "theta"
+        st.session_state["t.on"] = False
+
+    st.button("Reset", on_click=reset)
     t = option_type_toggle(key="t.type")
     x = choice("X axis", {"S": "Spot", "sigma": "Vol", "T": "Time"}, key="t.x", default="S")
     g = greek_picker(key="t.greek")
-    st.markdown(f"value={t}|{x}|{g}")
+    on = toggle("Overlay", key="t.on", default=True)
+    st.markdown(f"value={t}|{x}|{g}|{on}")
 
 
-def test_choice_widgets_return_values_not_labels() -> None:
+def run_choice_app() -> AppTest:
     at = AppTest.from_function(choice_script, default_timeout=DEFAULT_TIMEOUT)
     at.run()
     assert not at.exception, at.exception
-    assert value_line(at) == "value=call|S|delta"
-    at.button_group(key="t.type").set_value("put").run()
-    at.button_group(key="t.x").set_value("sigma").run()
-    at.button_group(key="t.greek").set_value("gamma").run()
-    assert value_line(at) == "value=put|sigma|gamma"
+    return at
+
+
+def test_choice_widgets_return_values_not_labels() -> None:
+    at = run_choice_app()
+    assert value_line(at) == "value=call|S|delta|True"
+    at.button_group(key=wkey(at, "t.type")).set_value("put").run()
+    at.button_group(key=wkey(at, "t.x")).set_value("sigma").run()
+    at.button_group(key=wkey(at, "t.greek")).set_value("gamma").run()
+    at.toggle(key=wkey(at, "t.on")).set_value(False).run()
+    assert value_line(at) == "value=put|sigma|gamma|False"
+    assert at.session_state["t.greek"] == "gamma"  # the canonical key holds the value
     # the chips show the greeks' display labels, price first
-    assert list(at.button_group(key="t.greek").options) == [u.label for u in GREEK_UNITS.values()]
+    chips = at.button_group(key=wkey(at, "t.greek"))
+    assert list(chips.options) == [u.label for u in GREEK_UNITS.values()]
+
+
+def test_choice_widgets_are_created_at_the_current_selection() -> None:
+    at = run_choice_app()
+    at.button_group(key=wkey(at, "t.greek")).set_value("vega").run()
+    chips = at.button_group(key=wkey(at, "t.greek"))
+    assert [chips.options[i] for i in chips.proto.default] == ["Vega"]
+    assert chips.key != "t.greek"
+    assert at.toggle(key=wkey(at, "t.on")).proto.default is True
+
+
+def test_a_plain_write_of_the_canonical_key_moves_the_widget() -> None:
+    at = run_choice_app()
+    at.button_group(key=wkey(at, "t.type")).set_value("put").run()
+    at.button_group(key=wkey(at, "t.greek")).set_value("gamma").run()
+    at.button[0].click().run()  # the callback writes the canonical keys only
+    assert value_line(at) == "value=call|S|theta|False"
+    assert at.button_group(key=wkey(at, "t.type")).value == "call"
+    assert at.button_group(key=wkey(at, "t.greek")).value == "theta"
+    assert at.toggle(key=wkey(at, "t.on")).value is False
+
+
+def number_script() -> None:
+    import streamlit as st
+
+    from eqd_desk.app.ui.inputs import steady_number
+
+    st.session_state.setdefault("t.K", 6300.0)
+    st.session_state.setdefault("t.size", 10)
+    st.button("Reset", on_click=lambda: st.session_state.update({"t.K": 6000.0}))
+    k = steady_number(
+        "Strike",
+        key="t.K",
+        min_value=0.01,
+        step=5.0,
+        format="%g",
+        width=136,
+        label_visibility="collapsed",
+    )
+    n = steady_number("Size", key="t.size", min_value=1, max_value=50, step=1)
+    st.markdown(f"value={k!r}|{n!r}")
+
+
+def test_steady_number_float_and_int_fields() -> None:
+    at = AppTest.from_function(number_script, default_timeout=DEFAULT_TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    assert value_line(at) == "value=6300.0|10"
+    strike = at.number_input(key=wkey(at, "t.K"))
+    assert strike.proto.default == 6300.0  # created at the current value
+    assert strike.proto.format == "%g"
+    strike.set_value(6325.0).run()
+    at.number_input(key=wkey(at, "t.size")).set_value(12).run()
+    assert value_line(at) == "value=6325.0|12"
+    at.button[0].click().run()  # a plain write of the canonical key remounts the field
+    assert at.number_input(key=wkey(at, "t.K")).value == 6000.0
+    assert value_line(at) == "value=6000.0|12"
 
 
 # ------------------------------------------------------------------ readouts
@@ -185,7 +278,7 @@ def test_greek_readout_shows_the_engine_values() -> None:
     assert premium.value == f"{a.reported.price:,.2f}"
     assert premium.proto.delta_description == "time value only"
     assert pnl.value == ":green[+17,959.06]"
-    assert any(m.value == "**Price & greeks**" for m in at.markdown)
+    assert any(m.value == "###### **Price & greeks**" for m in at.markdown)
     assert any("CALL" in m.value and "badge" in m.value for m in at.markdown)
     assert at.button[0].label == "Inside the slot"
 
@@ -234,6 +327,7 @@ def test_education_renders_content_verbatim_and_escaped() -> None:
     for s_field, s_label in STRATEGY_DOC_FIELD_LABELS.items():
         assert field_markdown(s_label, getattr(rr, s_field)) in texts
     assert any(markdown_safe(CUSTOM_STRUCTURE_NOTE) in t for t in texts)
+    assert "##### Custom structure" not in texts  # the custom note is untitled (React)
 
     barrier = EXOTIC_DOCS["barrier"]
     for e_field, e_label in EXOTIC_DOC_FIELD_LABELS.items():
@@ -248,3 +342,66 @@ def test_education_renders_content_verbatim_and_escaped() -> None:
     ]
     for term in ATTRIBUTION_TERMS:
         assert field_markdown(term.label, term.note) in texts
+
+
+# ------------------------------------------------------------------ panel actions & help
+
+
+def actions_script() -> None:
+    import streamlit as st
+
+    from eqd_desk.app.ui.widgets import (
+        choice,
+        number_slider,
+        reset_button,
+        surface_vol_button,
+        toggle,
+    )
+
+    st.session_state.setdefault("t.K", 5000.0)
+    st.session_state.setdefault("t.T", 0.25)
+    number_slider("Vol", key="t.sigma", min_value=0.01, max_value=1.0, step=0.0025, default=0.2)
+    kind = choice("Kind", {"a": "A", "b": "B"}, key="t.kind", default="a")
+    on = toggle("Flag", key="t.flag", default=False, help="costs $1 per $1 spot")
+    with st.container(horizontal=True):
+        surface_vol_button("t.")
+        reset_button({"t.sigma": 0.2, "t.kind": "a", "t.flag": False}, key="t.reset")
+    st.markdown(f"value={st.session_state['t.sigma']}|{kind}|{on}")
+
+
+def run_actions_app() -> AppTest:
+    at = AppTest.from_function(actions_script, default_timeout=DEFAULT_TIMEOUT)
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_surface_vol_button_snaps_sigma_to_the_seed_surface() -> None:
+    from eqd_desk.data import default_surface
+
+    at = run_actions_app()
+    at.button(key="t.surface").click().run()
+    expected = default_surface().get_vol(5000.0, 0.25)
+    assert at.session_state["t.sigma"] == pytest.approx(expected)
+    assert at.slider(key=slider_wkey(at, "t.sigma")).value == pytest.approx(expected)
+
+
+def test_reset_button_restores_sliders_choices_and_toggles() -> None:
+    at = run_actions_app()
+    at.slider(key=slider_wkey(at, "t.sigma")).set_value(0.5).run()
+    at.button_group(key=wkey(at, "t.kind")).set_value("b").run()
+    at.toggle(key=wkey(at, "t.flag")).set_value(True).run()
+    assert value_line(at) == "value=0.5|b|True"
+    at.button(key="t.reset").click().run()
+    assert value_line(at) == "value=0.2|a|False"
+    # every widget shows the restored value (they were remounted with it)
+    assert at.slider(key=slider_wkey(at, "t.sigma")).value == 0.2
+    assert at.number_input(key=field_wkey(at, "t.sigma")).value == 0.2
+    assert at.button_group(key=wkey(at, "t.kind")).value == "a"
+    assert at.toggle(key=wkey(at, "t.flag")).value is False
+
+
+def test_widget_help_is_escaped_exactly_once() -> None:
+    at = run_actions_app()
+    # plain text in: "$" escaped once (no LaTeX between the two dollar signs), not twice
+    assert at.toggle(key=wkey(at, "t.flag")).help == r"costs \$1 per \$1 spot"

@@ -160,6 +160,21 @@ def test_exotic_metrics_are_documented_greeks() -> None:
         assert metric in GREEK_UNITS
 
 
+def test_asset_digital_captions_match_the_cash_caption_and_the_decomposition() -> None:
+    """The Streamlit-only asset-or-nothing captions (one per option type) use the cash
+    caption's colour vocabulary and state the right identity: call = vanilla + K digitals,
+    put = K digitals − vanilla."""
+    captions = exotics.DIGITAL_ASSET_PRICE_CAPTIONS
+    assert set(captions) == {"call", "put"}
+    assert exotics.DIGITAL_PRICE_CAPTION.startswith("Blue: the digital. Orange:")
+    for option, text in captions.items():
+        assert text.startswith("Blue: asset-or-nothing. Orange:")
+        assert f"{option} spreads" in text
+        assert "pin risk" in text
+    assert "vanilla + K × cash digital" in captions["call"]
+    assert "K × cash digital − vanilla" in captions["put"]
+
+
 # -------------------------------------------------------------------------- simulator
 
 
@@ -282,3 +297,15 @@ def test_markdown_safe_round_trips_all_content() -> None:
         # no unescaped special character survives
         stripped = unescape.sub("", escaped)
         assert not set(stripped) & content.MARKDOWN_SPECIAL_CHARS, where
+
+
+def test_preset_names_are_the_engine_presets() -> None:
+    # one PresetName (the engine's); the content lists every preset exactly once
+    from typing import get_args
+
+    from eqd_desk.content.strategies import PRESET_NAMES, PresetName
+    from eqd_desk.engine import presets
+
+    assert PresetName is presets.PresetName
+    assert sorted(PRESET_NAMES) == sorted(get_args(presets.PresetName))
+    assert list(PRESET_NAMES) == [p.name for p in presets.PRESETS]

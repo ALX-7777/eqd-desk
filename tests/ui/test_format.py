@@ -287,3 +287,39 @@ def test_component_patterns() -> None:
     assert f.fmt_with_unit("6,312.45", None) == "6,312.45"
     for fn in (f.fmt_signed_money, f.fmt_signed_pct, f.fmt_days, f.fmt_years_days):
         assert fn(NAN) == "—"
+
+
+@pytest.mark.parametrize(
+    ("x", "expected"),
+    [
+        # JavaScript String(x), from Node 24
+        (3, "3"),
+        (2.5, "2.5"),
+        (100.0, "100"),
+        (-0.0, "0"),
+        (0.1 + 0.2, "0.30000000000000004"),
+        (1e-7, "1e-7"),
+        (1.5e-7, "1.5e-7"),
+        (1e21, "1e+21"),
+        (1.5e21, "1.5e+21"),
+        (0.00001, "0.00001"),
+        (0.000001, "0.000001"),
+        (NAN, "NaN"),
+        (INF, "Infinity"),
+        (-INF, "-Infinity"),
+        (6312.45, "6312.45"),
+        (-25.0, "-25"),
+        (1e20, "100000000000000000000"),
+        (5e-324, "5e-324"),
+        (-0.000123, "-0.000123"),
+    ],
+)
+def test_js_number_is_javascript_string(x: float, expected: str) -> None:
+    assert f.js_number(x) == expected
+
+
+def test_slider_thumb_formats() -> None:
+    # Streamlit format strings: a preset for percentages, printf for levels and years
+    assert f.THUMB_PERCENT == "percent"
+    assert f.THUMB_LEVEL == "%,.2f"
+    assert f.THUMB_YEARS == "%.3f y"

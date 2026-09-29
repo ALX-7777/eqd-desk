@@ -18,9 +18,27 @@ from eqd_desk.app.ui.simulator_clock import (
 )
 
 
-def test_speed_slider_matches_react() -> None:
-    assert (AUTO_MIN_MS, AUTO_MAX_MS, AUTO_STEP_MS, AUTO_DEFAULT_MS) == (120, 3000, 60, 650)
-    assert (AUTO_DEFAULT_MS - AUTO_MIN_MS) % AUTO_STEP_MS == 50  # React's default is off-grid too
+def test_speed_slider() -> None:
+    """React's slider is 120–3000 ms by 60, default 650. The page cannot redraw the desk at
+    120 ms per day (see the module docstring), so the floor is the fastest pace its
+    catch-up keeps, and the step puts the 650 default on the grid (React's is between two
+    stops)."""
+    assert (AUTO_MIN_MS, AUTO_MAX_MS, AUTO_STEP_MS, AUTO_DEFAULT_MS) == (400, 3000, 50, 650)
+    assert (AUTO_DEFAULT_MS - AUTO_MIN_MS) % AUTO_STEP_MS == 0
+    assert (AUTO_MAX_MS - AUTO_MIN_MS) % AUTO_STEP_MS == 0
+
+
+def test_the_catch_up_keeps_the_fastest_speed_through_a_slow_redraw() -> None:
+    """At the fastest speed, a timer run every ~0.9 s (the measured redraw cycle) still makes
+    one step per interval on average: two or three days per redraw, within the cap."""
+    now, last, days, most = 0.0, 0.0, 0, 0
+    for _ in range(200):
+        now += 0.9
+        n, last = auto_steps(now, last, AUTO_MIN_MS)
+        days += n
+        most = max(most, n)
+    assert days == int(now / (AUTO_MIN_MS / 1000))
+    assert most < MAX_CATCH_UP
 
 
 def test_auto_interval_is_the_speed_in_seconds_while_playing() -> None:

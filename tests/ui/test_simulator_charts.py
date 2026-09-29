@@ -5,15 +5,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from eqd_desk.app.ui import theme
+from eqd_desk.app.ui import charts, theme
 from eqd_desk.app.ui.sim_session import CumAttribution, HistPoint
 from eqd_desk.app.ui.simulator_charts import (
     DAY_FORMAT,
     MONEY_AXIS,
+    POINT_SIZES,
     day_text,
     explain_chart,
     path_chart,
     pnl_chart,
+    with_points,
 )
 
 HISTORY = (
@@ -39,7 +41,10 @@ def test_pnl_chart_plots_the_history_in_money_and_whole_days() -> None:
     layers = spec["layer"]
     line = next(layer for layer in layers if layer["mark"].get("type") == "line")
     assert line["encoding"]["y"]["title"] == "P&L (USD)"
-    assert line["encoding"]["y"]["axis"]["format"] == MONEY_AXIS
+    # the same money ticks as the explain chart below it (see MONEY_AXIS)
+    assert line["encoding"]["y"]["axis"] == {"format": MONEY_AXIS}
+    # whole days (config) on top of the shared tidy x axis (encoding)
+    assert line["encoding"]["x"]["axis"] == charts.tidy_x_axis()
     assert line["encoding"]["color"]["scale"]["range"] == [theme.ACCENT]
     # the tooltip prints "Day n" and money
     texts = [r for d in _datasets(spec) for r in d if "x_text" in r]
@@ -70,7 +75,9 @@ def test_path_chart_has_spot_and_vol_on_their_own_axes() -> None:
     assert spec["config"]["axisX"]["format"] == DAY_FORMAT
     lines = [layer for layer in spec["layer"] if layer["mark"].get("type") == "line"]
     assert [ln["encoding"]["y"]["axis"]["orient"] for ln in lines] == ["left", "right"]
+    assert lines[0]["encoding"]["y"]["axis"]["format"] == charts.SPOT_AXIS_FORMAT
     assert lines[1]["encoding"]["y"]["axis"]["format"] == ".1%"
+    assert lines[0]["encoding"]["x"]["axis"] == charts.tidy_x_axis()
     rows = _datasets(spec)[0]
     assert [(r["x"], r["l"], r["r"]) for r in rows] == [
         (0.0, 6312.45, 0.146),
@@ -78,3 +85,35 @@ def test_path_chart_has_spot_and_vol_on_their_own_axes() -> None:
         (2.0, 6330.1, 0.143),
     ]
     assert (rows[0]["l_text"], rows[0]["r_text"]) == ("6,312.45", "14.60%")
+
+
+# ------------------------------------------------------------------ day 0: a one-point path
+
+
+def _line_marks(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    return [layer["mark"] for layer in spec["layer"] if layer["mark"].get("type") == "line"]
+
+
+def test_a_one_point_path_is_drawn_as_dots() -> None:
+    """At day 0 the history is one point, which a line cannot draw: the P&L and spot & vol
+    charts would be empty frames. Each line then also marks its points (React draws dots)."""
+    day0 = HISTORY[:1]
+    (pnl,) = _line_marks(pnl_chart(day0, "USD").to_dict())
+    assert pnl["point"] == {"filled": True, "size": POINT_SIZES[0]}
+    spot, vol = _line_marks(path_chart(day0).to_dict())
+    # spot and vol coincide (each is centred on its own axis): the second dot sits inside
+    # the first, so both colours show
+    assert (spot["point"]["size"], vol["point"]["size"]) == POINT_SIZES
+    assert POINT_SIZES[0] > POINT_SIZES[1]
+
+
+def test_a_path_of_two_or_more_points_is_a_plain_line() -> None:
+    for spec in (pnl_chart(HISTORY[:2], "USD").to_dict(), path_chart(HISTORY).to_dict()):
+        assert all("point" not in mark for mark in _line_marks(spec))
+
+
+def test_with_points_leaves_the_original_chart_untouched() -> None:
+    chart = pnl_chart(HISTORY, "USD")
+    dotted = with_points(chart)
+    assert all("point" in mark for mark in _line_marks(dotted.to_dict()))
+    assert all("point" not in mark for mark in _line_marks(chart.to_dict()))

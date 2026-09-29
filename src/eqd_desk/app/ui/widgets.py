@@ -4,44 +4,59 @@ Mirrors the React components:
 
 - :func:`app_header` — the top bar's brand + market strip (``App.tsx``).
 - :func:`section_header` — a panel's title row with an optional badge / right-hand slot
-  (``.panel-title-row``).
-- :func:`number_slider` — the paired slider + numeric field of ``InputPanel.tsx`` (or the
-  slider-only ``LabeledSlider`` of ``Controls.tsx`` with ``compact=True``), kept in sync
-  through Session State.
+  (``.panel-title-row``), rendered as a small heading so the page has an outline.
+- :func:`number_slider` — the paired slider + fixed-width numeric field of
+  ``InputPanel.tsx`` (or the slider-only ``LabeledSlider`` of ``Controls.tsx`` with
+  ``compact=True``), both editing one canonical value.
 - :func:`hero_number` — the big premium / P&L number (``.price-hero``).
 - :func:`readout_table` / :func:`greek_readout` — the grouped, right-aligned greeks table of
-  ``GreeksReadout.tsx`` / ``PositionReadout.tsx`` (and any label · value · unit list).
-- :func:`choice`, :func:`option_type_toggle`, :func:`greek_picker` — segmented controls and
-  the greek "chips".
+  ``GreeksReadout.tsx`` / ``PositionReadout.tsx`` (and any label · value · unit list); the
+  table model is the pure :mod:`eqd_desk.app.ui.readout`.
+- :func:`choice`, :func:`option_type_toggle`, :func:`greek_picker`, :func:`toggle` —
+  segmented controls / pills, the greek "chips" and an on/off switch.
+- :func:`surface_vol_button` and :func:`reset_button` — the "σ ← surface" and "Reset"
+  actions of the input panels.
 
-The pure halves (row builders, styles, header stats, clamping) are separate functions so
-they can be unit-tested without Streamlit.
+Every input here follows the remount-safe contract of :mod:`eqd_desk.app.ui.inputs`: the
+value lives in a plain Session State key (the ``key`` you pass, read it with
+``st.session_state[key]``), the widgets use derived ``…__w<n>`` keys that are never written,
+and a programmatic change goes through :func:`set_number` /
+:func:`~eqd_desk.app.ui.inputs.set_value` (or :func:`reset_inputs` for a mixed set).
+
+Text arguments (labels, titles, badges, ``help``) are plain text: every widget here escapes
+them for Markdown itself, so callers never pass :func:`~eqd_desk.content.markdown_safe`
+output (it would be escaped twice). ``icon`` arguments are ``:material/…:`` shortcodes.
+
+The pure halves (header stats, the readout model) are separate functions so they can be
+unit-tested without Streamlit.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Final, Literal
 
-import pandas as pd
 import streamlit as st
 
-from eqd_desk.app.ui import theme
-from eqd_desk.app.ui.format import (
-    fmt_level,
-    fmt_num,
-    fmt_pct,
-    sign_class,
+from eqd_desk.app.ui import state
+from eqd_desk.app.ui.format import fmt_level, fmt_pct
+from eqd_desk.app.ui.inputs import (
+    LabelVisibility,
+    clamp_number,
+    remount,
+    steady_choice,
+    steady_key,
+    steady_toggle,
 )
-from eqd_desk.app.ui.theme import TONE_COLORS, TONE_MARKDOWN, Tone
+from eqd_desk.app.ui.nav import APP_ICON, APP_NAME
+from eqd_desk.app.ui.readout import HasAsDict, ReadoutRow, greek_rows, readout_styler
+from eqd_desk.app.ui.theme import TONE_MARKDOWN, Tone
 from eqd_desk.content import GREEK_KEYS, GreekKey, markdown_safe
-from eqd_desk.content.greeks import GREEK_GROUPS, GreekGroup
+from eqd_desk.content.greeks import GREEK_GROUPS, SURFACE_VOL_HINT, GreekGroup
 from eqd_desk.engine import GREEK_UNITS, OptionType
 
 if TYPE_CHECKING:
-    from pandas.io.formats.style import Styler
     from streamlit.delta_generator import DeltaGenerator
 
     from eqd_desk.data import MarketSnapshot, UnderlyingConfig
@@ -49,17 +64,16 @@ if TYPE_CHECKING:
 BadgeColor = Literal["red", "orange", "yellow", "blue", "green", "violet", "gray", "primary"]
 """Colours accepted by ``st.badge``."""
 
-APP_NAME: Final = "EQD Desk"
-"""Product name shown in the header strip and the browser tab."""
-
-APP_ICON: Final = ":material/finance_mode:"
-"""App icon (browser tab + header brand mark)."""
-
 
 def md_color(text: str, tone: Tone | None) -> str:
     """Wrap Markdown ``text`` in the Streamlit colour directive of ``tone`` (``:green[…]``);
     ``None`` leaves it uncoloured. ``text`` must already be Markdown-safe."""
     return f":{TONE_MARKDOWN[tone]}[{text}]" if tone else text
+
+
+def safe_help(text: str | None) -> str | None:
+    """A plain-text tooltip made Markdown-safe (``None`` / empty → no tooltip)."""
+    return markdown_safe(text) if text else None
 
 
 # ------------------------------------------------------------------ header strip
@@ -127,6 +141,32 @@ def app_header(snap: MarketSnapshot, cfg: UnderlyingConfig) -> None:
 
 # ------------------------------------------------------------------ titles
 
+SECTION_HEADING: Final = "###### "
+"""Markdown prefix of a :func:`section_header` title: the smallest heading level (``<h6>``,
+1 rem, the size of body text), so each panel title is a real heading that assistive
+technology can jump between, without looking bigger than the React panel titles."""
+
+
+def section_title(
+    title: str,
+    *,
+    subtitle: str | None = None,
+    highlight: str | None = None,
+    icon: str | None = None,
+) -> str:
+    """The Markdown of a :func:`section_header` title (pure): a small heading holding the
+    bold ``title``, a dim ``subtitle`` and an accent ``highlight``, after an optional dim
+    icon — ``"###### **Delta** :gray[vs] :primary[spot]"``."""
+    parts = [f"**{markdown_safe(title)}**"]
+    if subtitle:
+        parts.append(f":gray[{markdown_safe(subtitle)}]")
+    if highlight:
+        parts.append(f":primary[{markdown_safe(highlight)}]")
+    heading = " ".join(parts)
+    if icon:
+        heading = f":gray[{icon}] {heading}"
+    return f"{SECTION_HEADING}{heading}"
+
 
 def section_header(
     title: str,
@@ -139,9 +179,9 @@ def section_header(
     badge_icon: str | None = None,
     help: str | None = None,
 ) -> DeltaGenerator:
-    """A panel's title row: bold ``title`` (+ a dim ``subtitle`` and an accent ``highlight``,
-    e.g. ``section_header("Delta", subtitle="vs", highlight="spot")`` → **Delta** vs spot),
-    with an optional badge on the right.
+    """A panel's title row: the heading of :func:`section_title` (e.g.
+    ``section_header("Delta", subtitle="vs", highlight="spot")`` → **Delta** vs spot), with
+    an optional badge on the right.
 
     Returns the right-hand slot (a horizontal container) so a page can put a control there,
     like the React title rows::
@@ -149,17 +189,7 @@ def section_header(
         slot = section_header("Inputs", icon=":material/tune:")
         with slot:
             option_type = option_type_toggle(key="lab.type")
-
-    All text is plain (escaped here); ``icon`` is a ``:material/…:`` shortcode.
     """
-    parts = [f"**{markdown_safe(title)}**"]
-    if subtitle:
-        parts.append(f":gray[{markdown_safe(subtitle)}]")
-    if highlight:
-        parts.append(f":primary[{markdown_safe(highlight)}]")
-    heading = " ".join(parts)
-    if icon:
-        heading = f":gray[{icon}] {heading}"
     row = st.container(
         horizontal=True,
         horizontal_alignment="distribute",
@@ -167,7 +197,12 @@ def section_header(
         gap="small",
     )
     with row:
-        st.markdown(heading, help=help, width="content")
+        st.markdown(
+            section_title(title, subtitle=subtitle, highlight=highlight, icon=icon),
+            help=safe_help(help),
+            width="content",
+            anchors=False,
+        )
         slot = st.container(
             horizontal=True,
             horizontal_alignment="right",
@@ -188,48 +223,58 @@ def sub_heading(text: str) -> None:
 
 # ------------------------------------------------------------------ paired slider + field
 
+FIELD_WIDTH: Final = 96
+"""Width in px of :func:`number_slider`'s numeric field (React: a 92 px column).
 
-def clamp(value: float, lo: float, hi: float) -> float:
-    """``value`` limited to ``[lo, hi]`` (NaN → ``lo``)."""
-    if math.isnan(value):
-        return lo
-    return min(max(value, lo), hi)
+Streamlit adds +/- step buttons to a number input wider than 7.5rem (105 px with this
+theme's 14 px base font), and they squeeze the value to four or five characters ("6312.4",
+"0.082"). A 96 px field never grows them and shows "6312.45" whole in the mono font."""
 
 
 def slider_keys(key: str) -> tuple[str, str]:
-    """Session-state keys of the slider and numeric-field widgets behind
-    :func:`number_slider` ``key`` (the canonical value lives at ``key`` itself)."""
+    """The BASE keys of the slider and of the numeric field behind :func:`number_slider`
+    ``key`` (the canonical value lives at ``key`` itself). Each base has its own widget
+    generation, so the widget keys are ``widget_key_in(state, base)`` (``"lab.S__slider__w0"``,
+    see :mod:`eqd_desk.app.ui.inputs`): moving the slider remounts only the field, and typing
+    in the field remounts only the slider."""
     return f"{key}__slider", f"{key}__input"
 
 
-def _coerce(value: float, integer: bool) -> float:
-    return float(round(value)) if integer else float(value)
+def _store(key: str, wkey: str, lo: float, hi: float, integer: bool) -> None:
+    """Copy a widget's value to the canonical key, within the bounds (an emptied field keeps
+    the previous value)."""
+    raw = st.session_state.get(wkey)
+    if raw is not None:
+        v = clamp_number(float(raw), lo, hi, integer=integer)
+        st.session_state[key] = int(v) if integer else v
 
 
-def _on_slider(key: str) -> None:
-    slider_key, input_key = slider_keys(key)
-    v = st.session_state[slider_key]
-    st.session_state[key] = v
-    st.session_state[input_key] = v
-
-
-def _on_input(key: str, lo: float, hi: float, integer: bool) -> None:
-    slider_key, input_key = slider_keys(key)
-    raw = st.session_state[input_key]
-    v = clamp(_coerce(float(raw), integer), lo, hi) if raw is not None else st.session_state[key]
-    v = int(v) if integer else v
-    st.session_state[key] = v
-    st.session_state[slider_key] = v
-    st.session_state[input_key] = v
+def _on_edit(
+    key: str,
+    wkey: str,
+    lo: float,
+    hi: float,
+    integer: bool,
+    after: Callable[[], None] | None,
+) -> None:
+    """``on_change`` of the slider and of the field: store the new value as the canonical
+    value (the other widget then disagrees and remounts at the new value on the next render),
+    then run the caller's ``on_change``."""
+    _store(key, wkey, lo, hi, integer)
+    if after is not None:
+        after()
 
 
 def set_number(key: str, value: float) -> None:
     """Programmatically set a :func:`number_slider` (e.g. "Reset to snapshot", "σ ← surface").
 
     Call it from a widget callback (``on_click``/``on_change``) or before the slider renders
-    in the run; both widgets pick the value up when they render.
+    in the run: it writes the canonical value and remounts both widgets, which show the new
+    value when they render (clamped to the bounds).
     """
     st.session_state[key] = value
+    for base in slider_keys(key):
+        remount(base)
 
 
 def number_slider(
@@ -249,14 +294,19 @@ def number_slider(
     help: str | None = None,
     on_change: Callable[[], None] | None = None,
     disabled: bool = False,
+    field_width: int = FIELD_WIDTH,
 ) -> float:
     """A labelled numeric input: a header row (label, optional italic ``symbol`` like *S*,
-    and a mono ``display`` of the value with units on the right), then a slider paired with a
-    numeric field (React ``InputPanel`` ``Field``), both editing the same value.
+    and a mono ``display`` of the value with units on the right), then a slider with a
+    fixed-width numeric field beside it (React ``InputPanel`` ``Field``), both editing the
+    same value; or the slider alone with ``compact=True`` (React ``LabeledSlider``).
 
     The canonical value lives in ``st.session_state[key]`` (a plain, non-widget key, so it
-    survives page switches); the two widgets use :func:`slider_keys` and are re-synced from
-    it on every run, so moving either one — or calling :func:`set_number` — moves both.
+    survives page switches). The widgets are remount-safe (:mod:`eqd_desk.app.ui.inputs`):
+    each is created with ``value=`` the canonical value under a generation-suffixed key
+    derived from :func:`slider_keys`, so moving either one — or calling :func:`set_number`,
+    or writing ``key`` from a callback — moves both, and a frontend remount never resets
+    them to ``min_value``.
 
     Args:
         label: sentence-case label ("Spot", "Time to expiry").
@@ -266,44 +316,58 @@ def number_slider(
         display: text (or ``value -> text``) shown on the right of the header, e.g.
             ``lambda v: fmt_with_unit(fmt_level(v), "USD")``; ``None`` hides it.
         symbol: the variable's symbol, shown dim after the label ("S", "σ").
-        slider_format, input_format: printf-style formats for the slider thumb and the
-            field (``"%.4f"``); the thumb defaults to the field's format.
-        integer: integer-valued control (returns an ``int``-valued float).
+        slider_format: format of the slider thumb, a printf string (``"%.3f y"``) or a
+            Streamlit preset: pass :data:`~eqd_desk.app.ui.format.THUMB_PERCENT` for a
+            decimal shown as a percentage and :data:`~eqd_desk.app.ui.format.THUMB_LEVEL`
+            for a level, so the thumb reads in the units of ``display``. Defaults to
+            ``input_format``.
+        input_format: printf format of the numeric field (``"%.4f"``).
+        integer: integer-valued control (returns an ``int``).
         compact: slider only, no numeric field (React ``LabeledSlider``).
-        help: tooltip on the label.
+        help: tooltip on the label (plain text).
         on_change: extra callback after the value changed.
-        disabled: grey out both widgets.
+        disabled: grey out the widgets.
+        field_width: width of the numeric field in px (default :data:`FIELD_WIDTH`, which
+            keeps Streamlit's +/- buttons away; the slider takes the rest of the row).
 
     Returns:
         The current value.
     """
     slider_format = slider_format or input_format
-    lo, hi = _coerce(min_value, integer), _coerce(max_value, integer)
-    stp = _coerce(step, integer) if integer else float(step)
+    lo = clamp_number(min_value, min_value, None, integer=integer)
+    hi = clamp_number(max_value, max_value, None, integer=integer)
     if key not in st.session_state:
-        st.session_state[key] = clamp(_coerce(lo if default is None else default, integer), lo, hi)
-    value = clamp(_coerce(float(st.session_state[key]), integer), lo, hi)
+        st.session_state[key] = lo if default is None else default
+    value = clamp_number(float(st.session_state[key]), lo, hi, integer=integer)
     typed: float = int(value) if integer else value
     st.session_state[key] = typed
-    slider_key, input_key = slider_keys(key)
-    for wkey in (slider_key, input_key):
-        if st.session_state.get(wkey) != typed:
-            st.session_state[wkey] = typed
+    slider_base, field_base = slider_keys(key)
 
-    def _after_slider() -> None:
-        _on_slider(key)
-        if on_change is not None:
-            on_change()
-
-    def _after_input() -> None:
-        _on_input(key, lo, hi, integer)
-        if on_change is not None:
-            on_change()
-
-    head = f"{markdown_safe(label)}"
+    head = markdown_safe(label)
     if symbol:
         head += f" :gray[*{markdown_safe(symbol)}*]"
     shown = display(typed) if callable(display) else display
+    lo_arg: float = int(lo) if integer else lo
+    hi_arg: float = int(hi) if integer else hi
+    step_arg: float = round(step) if integer else float(step)
+
+    def slider() -> None:
+        wkey = steady_key(slider_base, typed)
+        st.slider(
+            label,
+            min_value=lo_arg,
+            max_value=hi_arg,
+            step=step_arg,
+            value=typed,
+            format=slider_format,
+            key=wkey,
+            on_change=_on_edit,
+            args=(key, wkey, lo, hi, integer, on_change),
+            label_visibility="collapsed",
+            disabled=disabled,
+            width="stretch",
+        )
+
     with st.container(gap="xsmall"):
         with st.container(
             horizontal=True,
@@ -311,51 +375,92 @@ def number_slider(
             vertical_alignment="bottom",
             gap="small",
         ):
-            st.markdown(head, help=help, width="content")
+            st.markdown(head, help=safe_help(help), width="content")
             if shown:
                 st.markdown(f"`{shown}`", width="content")
-        lo_arg: float = int(lo) if integer else lo
-        hi_arg: float = int(hi) if integer else hi
-        step_arg: float = int(stp) if integer else stp
         if compact:
-            st.slider(
-                label,
-                min_value=lo_arg,
-                max_value=hi_arg,
-                step=step_arg,
-                format=slider_format,
-                key=slider_key,
-                on_change=_after_slider,
-                label_visibility="collapsed",
-                disabled=disabled,
-            )
+            slider()
         else:
-            left, right = st.columns([2.3, 1], vertical_alignment="center", gap="small", wrap=False)
-            with left:
-                st.slider(
-                    label,
-                    min_value=lo_arg,
-                    max_value=hi_arg,
-                    step=step_arg,
-                    format=slider_format,
-                    key=slider_key,
-                    on_change=_after_slider,
-                    label_visibility="collapsed",
-                    disabled=disabled,
-                )
-            with right:
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                slider()
+                wkey = steady_key(field_base, typed)
                 st.number_input(
                     f"{label} value",
                     min_value=lo_arg,
                     max_value=hi_arg,
                     step=step_arg,
+                    value=typed,
                     format=input_format,
-                    key=input_key,
-                    on_change=_after_input,
+                    key=wkey,
+                    on_change=_on_edit,
+                    args=(key, wkey, lo, hi, integer, on_change),
                     label_visibility="collapsed",
                     disabled=disabled,
+                    width=field_width,
                 )
     return typed
+
+
+# ------------------------------------------------------------------ panel actions
+
+
+def reset_inputs(values: Mapping[str, object]) -> None:
+    """Set canonical keys to new values (a "Reset" callback) whatever widget shows each one
+    (a :func:`number_slider`, a choice, a toggle or a number field): the value is written
+    and every widget that can show the key is remounted, so each displays its new value
+    on the next run. Call it from a callback, like :func:`set_number`."""
+    for key, value in values.items():
+        st.session_state[key] = value
+        for base in (key, *slider_keys(key)):
+            remount(base)
+
+
+def reset_button(
+    values: Mapping[str, object],
+    *,
+    key: str,
+    help: str = "Restore the opening inputs",
+    label: str = "Reset",
+) -> None:
+    """A full-width "Reset" button that restores ``values`` (canonical key → value) through
+    :func:`reset_inputs`."""
+    st.button(
+        label,
+        key=key,
+        icon=":material/restart_alt:",
+        help=safe_help(help),
+        on_click=reset_inputs,
+        args=(dict(values),),
+        width="stretch",
+    )
+
+
+SURFACE_VOL_LABEL: Final = "σ ← surface"
+"""Label of :func:`surface_vol_button` (React's button text)."""
+
+
+def surface_vol_from(prefix: str) -> None:
+    """Set ``<prefix>sigma`` to the seed vol surface at the strike ``<prefix>K`` and tenor
+    ``<prefix>T`` (every input panel with a σ keys its inputs this way: ``"lab."``,
+    ``"exo.bar."``). A callback: the sliders show the new σ on the next run."""
+    K = float(st.session_state[f"{prefix}K"])
+    T = float(st.session_state[f"{prefix}T"])
+    set_number(f"{prefix}sigma", state.surface().get_vol(K, T))
+
+
+def surface_vol_button(prefix: str, *, key: str | None = None) -> None:
+    """React's "σ ← surface" (full width): snap σ to the seed surface at the current strike
+    and tenor, to feel the skew (:func:`surface_vol_from`). ``key`` defaults to
+    ``<prefix>surface``."""
+    st.button(
+        SURFACE_VOL_LABEL,
+        key=key or f"{prefix}surface",
+        icon=":material/ssid_chart:",
+        help=safe_help(SURFACE_VOL_HINT),
+        on_click=surface_vol_from,
+        args=(prefix,),
+        width="stretch",
+    )
 
 
 # ------------------------------------------------------------------ hero number
@@ -376,7 +481,7 @@ def hero_number(
         value: already formatted (``fmt_money(price)``).
         detail: small dim line under the value ("intrinsic 12.45 · time value 107.16").
         tone: colour the value (e.g. ``sign_class(pnl)``); ``None`` = plain text.
-        help: tooltip on the label.
+        help: tooltip on the label (plain text).
     """
     st.metric(
         markdown_safe(label),
@@ -384,172 +489,21 @@ def hero_number(
         delta="" if detail else None,
         delta_description=markdown_safe(detail) if detail else None,
         border=True,
-        help=help,
+        help=safe_help(help),
     )
 
 
 # ------------------------------------------------------------------ readout table
 
-RowKind = Literal["row", "group"]
-"""A value row, or a group heading ("First order")."""
-
-
-@dataclass(frozen=True, slots=True)
-class ReadoutRow:
-    """One line of a :func:`readout_table`: label · right-aligned mono value · dim unit."""
-
-    label: str
-    value: float = math.nan
-    """The number (kept numeric so the column right-aligns)."""
-    text: str | None = None
-    """Display text; default :func:`~eqd_desk.app.ui.format.fmt_num` of ``value``."""
-    unit: str = ""
-    tone: Tone | None = None
-    """Value colour; default the sign of ``value`` (green / red / dim)."""
-    selected: bool = False
-    """Highlight the row (the greek currently plotted / explained)."""
-    kind: RowKind = "row"
-
-
-def group_row(title: str) -> ReadoutRow:
-    """A group heading row ("First order", "Diagnostics")."""
-    return ReadoutRow(title, kind="group")
-
-
-def row_text(row: ReadoutRow) -> str:
-    """The value text a row displays (empty for a group heading)."""
-    if row.kind == "group":
-        return ""
-    return row.text if row.text is not None else fmt_num(row.value)
-
-
-def row_tone(row: ReadoutRow) -> Tone:
-    """The value colour of a row: its explicit tone, else the sign of its value."""
-    return row.tone if row.tone is not None else sign_class(row.value)
-
-
-def row_styles(row: ReadoutRow) -> tuple[str, str, str]:
-    """CSS of the (label, value, unit) cells of a row — the React ``.greeks-table`` look."""
-    if row.kind == "group":
-        head = (
-            f"color: {theme.TEXT_DIM}; font-size: 10.5px; letter-spacing: 0.6px; "
-            "text-transform: uppercase; padding-top: 12px; white-space: nowrap"
-        )
-        # The heading sits in the label cell only (a Styler table has no colspan):
-        # max-width 0 keeps it from widening the label column; it overflows into the
-        # (empty) value and unit cells of its row instead.
-        return f"{head}; max-width: 0; overflow: visible", head, head
-    sel = f"background-color: {theme.ACCENT_DIM}; " if row.selected else ""
-    label = sel + ("font-weight: 600; " if row.selected else "") + "font-size: 13px"
-    label += "; white-space: nowrap"
-    if row.selected:
-        label += f"; box-shadow: inset 2px 0 0 {theme.ACCENT}"
-    value = (
-        sel
-        + f"font-family: {theme.MONO_FONT}; font-variant-numeric: tabular-nums; "
-        + f"font-weight: 600; white-space: nowrap; color: {TONE_COLORS[row_tone(row)]}"
-    )
-    unit = sel + f"color: {theme.TEXT_DIM}; font-size: 11px; white-space: nowrap"
-    return label, value, unit
-
-
-def readout_frame(rows: Sequence[ReadoutRow]) -> pd.DataFrame:
-    """The table's data: ``label`` (Markdown-escaped), numeric ``value`` (NaN for group
-    headings) and ``unit`` (escaped)."""
-    return pd.DataFrame(
-        {
-            "label": [markdown_safe(r.label) for r in rows],
-            "value": [math.nan if r.kind == "group" else float(r.value) for r in rows],
-            "unit": [markdown_safe(r.unit) for r in rows],
-        }
-    )
-
-
-def readout_styler(rows: Sequence[ReadoutRow]) -> Styler:
-    """A Pandas Styler: display text per row (the value column stays numeric, so Streamlit
-    right-aligns it) and the per-cell CSS of :func:`row_styles`."""
-    df = readout_frame(rows)
-    styles = [row_styles(r) for r in rows]
-    sty = df.style.hide(axis="index")
-    for i, r in enumerate(rows):
-        # (slice(i, i), slice(c, c)) is the single cell (i, c) under label-based .loc rules.
-        sty = sty.format(
-            _const(markdown_safe(row_text(r))), subset=(slice(i, i), slice("value", "value"))
-        )
-        # Units and group headings must not break mid-phrase (the Markdown cell ignores
-        # `white-space`), so they are displayed with non-breaking spaces.
-        sty = sty.format(
-            _const(_unbreakable(markdown_safe(r.unit))), subset=(slice(i, i), slice("unit", "unit"))
-        )
-        if r.kind == "group":
-            sty = sty.format(
-                _const(_unbreakable(markdown_safe(r.label))),
-                subset=(slice(i, i), slice("label", "label")),
-            )
-    return sty.apply(
-        lambda frame: pd.DataFrame(styles, index=frame.index, columns=frame.columns), axis=None
-    )
-
-
-def _const(text: str) -> Callable[[object], str]:
-    """A Styler formatter that ignores the cell value and prints ``text``."""
-    return lambda _value: text
-
-
-NBSP: Final = " "
-"""Non-breaking space."""
-
-
-def _unbreakable(text: str) -> str:
-    """``text`` with its spaces made non-breaking (kept on one line)."""
-    return text.replace(" ", NBSP)
-
 
 def readout_table(rows: Sequence[ReadoutRow]) -> None:
-    """Render rows as a dense, right-aligned table (label · value · unit), group headings in
-    small dim capitals and the selected row highlighted — React's ``.greeks-table``."""
+    """Render rows (:class:`~eqd_desk.app.ui.readout.ReadoutRow`) as a dense, right-aligned
+    table (label · value · unit), group headings in small dim capitals and the selected row
+    highlighted — React's ``.greeks-table``. The model and its styles are the pure
+    :mod:`eqd_desk.app.ui.readout`."""
     if not rows:
         return
     st.table(readout_styler(rows), border="horizontal", hide_index=True, hide_header=True)
-
-
-class HasAsDict(Protocol):
-    """Anything that exposes its fields as a dict (engine ``Greeks``, ``ExoticGreeks``)."""
-
-    def as_dict(self) -> dict[str, float]: ...
-
-
-def greek_rows(
-    values: Mapping[str, float] | HasAsDict,
-    *,
-    groups: Sequence[GreekGroup] | None = GREEK_GROUPS,
-    keys: Sequence[str] | None = None,
-    selected: str | None = None,
-) -> list[ReadoutRow]:
-    """Readout rows for greeks in REPORTED desk units, labelled and unit-tagged from
-    :data:`eqd_desk.engine.GREEK_UNITS`.
-
-    Args:
-        values: reported greeks (``analysis.reported``, an ``ExoticGreeks``, or a mapping).
-        groups: titled groups (default: first order / second order & cross / third order,
-            as in the React readout); ``None`` = one flat list of ``keys``.
-        keys: the greeks of a flat list (used when ``groups`` is None), e.g.
-            ``("delta", "gamma", "vega", "theta", "rho")`` for an exotic.
-        selected: the greek to highlight.
-    """
-    data = values if isinstance(values, Mapping) else values.as_dict()
-
-    def row(k: str) -> ReadoutRow:
-        u = GREEK_UNITS[k]
-        return ReadoutRow(u.label, float(data[k]), unit=u.unit, selected=k == selected)
-
-    if groups is None:
-        return [row(k) for k in (keys or ())]
-    out: list[ReadoutRow] = []
-    for g in groups:
-        out.append(group_row(g.title))
-        out.extend(row(k) for k in g.keys)
-    return out
 
 
 def greek_readout(
@@ -558,10 +512,14 @@ def greek_readout(
     groups: Sequence[GreekGroup] | None = GREEK_GROUPS,
     keys: Sequence[str] | None = None,
     selected: str | None = None,
+    currency: str | None = None,
 ) -> None:
-    """Render :func:`greek_rows` as a :func:`readout_table` (every greek, grouped by order,
-    in desk units, the selected one highlighted)."""
-    readout_table(greek_rows(values, groups=groups, keys=keys, selected=selected))
+    """Render :func:`~eqd_desk.app.ui.readout.greek_rows` as a :func:`readout_table` (every
+    greek, grouped by order, in the desk units of ``currency``, the selected one
+    highlighted)."""
+    readout_table(
+        greek_rows(values, groups=groups, keys=keys, selected=selected, currency=currency)
+    )
 
 
 # ------------------------------------------------------------------ choices
@@ -573,27 +531,28 @@ def choice[T: str](
     *,
     key: str,
     default: T,
+    kind: Literal["segmented", "pills"] = "segmented",
     help: str | None = None,
-    label_visibility: Literal["visible", "hidden", "collapsed"] = "collapsed",
+    label_visibility: LabelVisibility = "collapsed",
+    on_change: Callable[[], None] | None = None,
 ) -> T:
-    """A segmented control over ``options`` (value → display label) that always has a
-    selection (``required``), kept for the session under ``key``.
+    """A segmented control (or pills, ``kind="pills"``) over ``options`` (value → display
+    label, Markdown) that always has a selection (``required``). The value lives at the
+    canonical ``key`` for the session (remount-safe, see :mod:`eqd_desk.app.ui.inputs`);
+    ``on_change`` runs after a user pick is stored there.
 
     Returns the selected VALUE (not its label).
     """
-    if st.session_state.get(key) not in options:
-        st.session_state[key] = default
-    picked = st.segmented_control(
+    return steady_choice(
         label,
-        list(options),
-        format_func=lambda v: options[v],
+        options,
         key=key,
-        required=True,
+        default=default,
+        kind=kind,
         help=help,
         label_visibility=label_visibility,
-        persist_state="session",
+        on_change=on_change,
     )
-    return picked if picked is not None else default
 
 
 OPTION_TYPE_LABELS: Final[Mapping[OptionType, str]] = {"call": "Call", "put": "Put"}
@@ -617,19 +576,72 @@ def greek_picker(
     default: GreekKey = "delta",
     label: str = "Greek",
     help: str | None = None,
+    on_change: Callable[[], None] | None = None,
 ) -> GreekKey:
     """The greek "chips" (React ``.edu-chips``): pills over ``options`` (price + every greek
-    by default), one always selected; drives which greek is plotted and explained."""
-    if st.session_state.get(key) not in options:
-        st.session_state[key] = default
-    picked = st.pills(
+    by default), one always selected; drives which greek is plotted and explained. The value
+    lives at the canonical ``key`` (remount-safe, like :func:`choice`)."""
+    return choice(
         label,
-        list(options),
-        format_func=greek_label,
+        {k: greek_label(k) for k in options},
         key=key,
-        required=True,
+        default=default,
+        kind="pills",
         help=help,
-        label_visibility="collapsed",
-        persist_state="session",
+        on_change=on_change,
     )
-    return picked if picked is not None else default
+
+
+def toggle(
+    label: str,
+    *,
+    key: str,
+    default: bool = False,
+    help: str | None = None,
+    on_change: Callable[[], None] | None = None,
+    disabled: bool = False,
+) -> bool:
+    """An on/off switch (``st.toggle``) whose value lives at the canonical ``key``, seeded
+    with ``default`` (remount-safe, like :func:`choice`). Returns the current value."""
+    return steady_toggle(
+        label,
+        key=key,
+        default=default,
+        help=help,
+        on_change=on_change,
+        disabled=disabled,
+    )
+
+
+__all__ = [
+    "FIELD_WIDTH",
+    "OPTION_TYPE_LABELS",
+    "SECTION_HEADING",
+    "SURFACE_VOL_LABEL",
+    "BadgeColor",
+    "HeaderStat",
+    "app_header",
+    "choice",
+    "greek_label",
+    "greek_picker",
+    "greek_readout",
+    "header_stats",
+    "header_subtitle",
+    "hero_number",
+    "md_color",
+    "number_slider",
+    "option_type_toggle",
+    "readout_table",
+    "reset_button",
+    "reset_inputs",
+    "safe_help",
+    "section_header",
+    "section_title",
+    "seed_badge_text",
+    "set_number",
+    "slider_keys",
+    "sub_heading",
+    "surface_vol_button",
+    "surface_vol_from",
+    "toggle",
+]

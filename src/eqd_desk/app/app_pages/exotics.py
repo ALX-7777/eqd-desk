@@ -6,8 +6,10 @@ replication), a Phoenix autocallable (path-dependence, priced by Monte Carlo) an
 swap (the 1/K² strip and the convexity premium over ATM). Each view is a three-column
 terminal: controls and readout, the characteristic chart, and the Learn panel.
 
-The views live in :mod:`eqd_desk.app.ui.exotics_views`; their numbers in
-:mod:`eqd_desk.app.ui.exotics_curves`. Only the selected sub-tab is computed.
+The views (widgets, layout, caching) live in :mod:`eqd_desk.app.ui.exotics_views`; their
+pure halves in :mod:`eqd_desk.app.ui.exotics_curves` (the numbers),
+:mod:`eqd_desk.app.ui.exotics_charts` (the charts) and :mod:`eqd_desk.app.ui.exotics_display`
+(the readout rows and notes). Only the selected sub-tab is computed.
 """
 
 from __future__ import annotations

@@ -10,7 +10,9 @@ from eqd_desk.app.ui import charts, state, theme
 from eqd_desk.app.ui.charts import Series, VRule
 from eqd_desk.app.ui.education import field_markdown
 from eqd_desk.app.ui.format import fmt_level, fmt_num, fmt_pct
+from eqd_desk.app.ui.home_text import BSM_LATEX, note_markdown, skew_source, structure_ideas
 from eqd_desk.app.ui.nav import EXOTICS, GREEKS_LAB, SIMULATOR, STRATEGY_BUILDER, PageSpec
+from eqd_desk.app.ui.units import greek_unit
 from eqd_desk.app.ui.widgets import section_header, sub_heading
 from eqd_desk.content import EXOTIC_DOCS, KEY_RELATIONSHIPS, SIM_CONCEPTS, markdown_safe
 from eqd_desk.content.exotics import EXOTIC_TAB_LABELS
@@ -45,13 +47,17 @@ def badges(labels: list[str], color: str = "gray") -> str:
 
 
 def tool_card(spec: PageSpec, inside: str, ideas: list[str]) -> None:
-    """A bordered card: title, one-liner, what is inside, the key ideas, and a link."""
+    """A bordered card: title, one-liner, what is inside, the key ideas, and a link.
+
+    The cards stretch to the tallest one in the row, and the stretching space above the
+    link pins every "Open …" link to the bottom of its card, so the four line up.
+    """
     with st.container(border=True, height="stretch"):
         st.markdown(f"#### :primary[{spec.icon}] {markdown_safe(spec.title)}", anchors=False)
         st.markdown(markdown_safe(spec.blurb))
         st.markdown(inside)
-        if ideas:
-            st.markdown("\n".join(f"- {markdown_safe(i)}" for i in ideas))
+        st.markdown("\n".join(f"- {markdown_safe(i)}" for i in ideas))
+        st.space("stretch")
         st.page_link(
             str(spec.path),
             label=f"Open {spec.title.lower()}",
@@ -68,7 +74,7 @@ with tool_cols[0]:
         [r.title for r in KEY_RELATIONSHIPS],
     )
 with tool_cols[1]:
-    tool_card(STRATEGY_BUILDER, badges([p.label for p in PRESETS]), [])
+    tool_card(STRATEGY_BUILDER, badges([p.label for p in PRESETS]), structure_ideas())
 with tool_cols[2]:
     tool_card(
         EXOTICS,
@@ -109,9 +115,12 @@ with st.container(horizontal=True, gap="small"):
         help="Quadratic smile in log-moneyness k = ln(K/S): iv ≈ atm + slope·k + curv·k².",
     )
 
+proxy = snap.tickers.options_proxy or cfg.options_proxy
+skew = skew_source(snap.source_notes, proxy)
+
 smile_col, term_col, notes_col = st.columns([1.15, 1, 1])
 with smile_col, st.container(border=True, height="stretch"):
-    section_header("Implied-vol smile", subtitle="30-day", highlight=cfg.options_proxy + " shape")
+    section_header("Implied-vol smile", subtitle="30-day", highlight=skew.tag)
     strikes = charts.sweep_x(snap.spot * 0.7, snap.spot * 1.3, 120)
     smile = pd.DataFrame({"K": strikes, "iv": [surface.get_vol(k, SEED_T) for k in strikes]})
     charts.show_chart(
@@ -161,14 +170,14 @@ with notes_col, st.container(border=True, height="stretch"):
         {
             "Index level": f"`{snap.tickers.index_ticker or cfg.index_ticker}`",
             "ATM vol anchor": f"`{snap.tickers.vol_ticker or cfg.vol_index_ticker}`",
-            "Skew shape": f"`{snap.tickers.options_proxy or cfg.options_proxy}` option chain",
+            "Skew shape": skew.detail,
             "Currency": markdown_safe(snap.currency),
         },
         border="horizontal",
     )
     sub_heading("Source notes")
     for note in snap.source_notes:
-        st.caption(markdown_safe(note))
+        st.caption(note_markdown(note))
 
 # ------------------------------------------------------------------ how numbers are computed
 
@@ -180,25 +189,21 @@ with how_col, st.container(border=True, height="stretch"):
         "scratch in `eqd_desk.engine`: no options library, every formula readable.\n"
         "- **Greeks are analytic**, and each one is checked in the test suite against a "
         "central finite-difference bump of the pricer, plus hard-coded reference values.\n"
-        "- **Exotics** use closed forms where they exist (barriers, digitals, variance "
-        "swap) and seeded Monte Carlo otherwise (the autocallable), with bump greeks.\n"
+        "- **Exotics**: closed forms for barriers and digitals, a static 1/K² option-strip "
+        "replication for the variance swap, and seeded Monte Carlo for the path-dependent "
+        "autocallable. Their greeks are central-difference bumps of those pricers.\n"
         "- **Conventions**: T is a year fraction of calendar days (days / 365); r and q are "
         "continuously compounded decimals; vols are decimals (0.146 = 14.6 vol points)."
     )
-    st.latex(
-        r"d_1 = \frac{\ln(S/K) + (r - q + \tfrac{1}{2}\sigma^2)\,T}{\sigma\sqrt{T}},"
-        r"\qquad d_2 = d_1 - \sigma\sqrt{T}"
-    )
-    st.latex(
-        r"C = S e^{-qT} N(d_1) - K e^{-rT} N(d_2),"
-        r"\qquad P = K e^{-rT} N(-d_2) - S e^{-qT} N(-d_1)"
-    )
+    st.latex(BSM_LATEX)  # one formula per row: each fits a phone-width card
 with units_col, st.container(border=True, height="stretch"):
     section_header("Desk units", subtitle="how each greek is reported")
     units = pd.DataFrame(
         {
             "Greek": [GREEK_UNITS[k].label for k in ("price", *GREEK_NAMES)],
-            "Reported": [markdown_safe(GREEK_UNITS[k].unit) for k in ("price", *GREEK_NAMES)],
+            "Reported": [
+                markdown_safe(greek_unit(k, snap.currency)) for k in ("price", *GREEK_NAMES)
+            ],
             "From the raw partial": [
                 markdown_safe(GREEK_UNITS[k].scale_note) for k in ("price", *GREEK_NAMES)
             ],

@@ -52,15 +52,16 @@ Example::
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final, Literal
 
-from eqd_desk.app.ui.format import fmt_money, js_round
+from eqd_desk.app.ui.bounds import listed_strike_step
+from eqd_desk.app.ui.format import fmt_money, js_number, js_round
 from eqd_desk.content.simulator import FILL_MESSAGE_TEMPLATE, MISS_MESSAGE_TEMPLATE
 from eqd_desk.data import MarketSnapshot
-from eqd_desk.engine.bsm import price as vanilla_price
+from eqd_desk.engine import BsmInputs, OptionType
+from eqd_desk.engine import price as vanilla_price
 from eqd_desk.engine.presets import PresetName, PresetParams, build_preset, round_to
 from eqd_desk.engine.rng import Mulberry32, NormalSampler
 from eqd_desk.engine.sim import (
@@ -98,7 +99,6 @@ from eqd_desk.engine.sim import (
     window_steps,
 )
 from eqd_desk.engine.strategy import LegSide
-from eqd_desk.engine.types import BsmInputs, OptionType
 
 Mode = Literal["simulated", "historical"]
 """Market mode: a simulated GBM + leverage path, or a replay of real history."""
@@ -129,17 +129,25 @@ EXPIRE_DAYS: Final = 4
 RFQ_ARRIVAL_PROB: Final = 0.4
 """Chance a new client RFQ arrives on each Auto day (when the queue has room)."""
 
+# The five random streams (see the module docstring): each stream's seed, and for the
+# streams that are reseeded on Reset, the stride (reset ``n`` seeds it with seed + n·stride).
 SEED_MARKET: Final = 0x9A17
+"""Seed of the market stream (two normals per simulated step)."""
 SEED_RFQ: Final = 0x2BAD
+"""Seed of the RFQ stream (never reset)."""
 SEED_NOISE: Final = 0x51DE
+"""Seed of the client-valuation noise stream (one normal per quote)."""
 SEED_ARRIVAL: Final = 0xA771
+"""Seed of the RFQ-arrival stream (one draw per Auto step with room in the queue)."""
 SEED_REPLAY: Final = 0x7E1A
-"""Seeds of the five random streams (see the module docstring)."""
+"""Seed of the replay-window pick (never reset)."""
 
 RESEED_MARKET: Final = 101
+"""Per-reset stride of the market stream's seed."""
 RESEED_NOISE: Final = 211
+"""Per-reset stride of the noise stream's seed."""
 RESEED_ARRIVAL: Final = 307
-"""Per-reset seed strides: reset ``n`` seeds a stream with ``seed + n·stride``."""
+"""Per-reset stride of the arrival stream's seed."""
 
 DELTA_WARN: Final = 40.0
 """|Net delta| (index units) above which the scorecard flags directional risk."""
@@ -190,7 +198,7 @@ def desk_config(snap: MarketSnapshot) -> DeskConfig:
         replay_base=ReplayBase(
             r=snap.r, q=snap.q, skew_slope=snap.skew.slope, skew_curv=snap.skew.curv, dt=params.dt
         ),
-        strike_step=25.0 if snap.spot >= 2000 else 5.0,
+        strike_step=listed_strike_step(snap.spot),
         currency=snap.currency,
     )
 
@@ -365,6 +373,18 @@ def structure_orders(ticket: Ticket, market: MarketState, strike_step: float) ->
     ]
 
 
+def ticket_priceable(ticket: Ticket, market: MarketState, strike_step: float) -> bool:
+    """Whether every strike the ticket would trade is positive, so it can be priced and
+    executed. A structure's wings are placed around spot, and the iron condor's outer put
+    sits at ``atm − 2·wing``, at or below zero once the wing reaches half of spot (the page
+    caps the wing below that; this guards the engine whatever the inputs)."""
+    if ticket.kind == "structure":
+        return all(o.K > 0 for o in structure_orders(ticket, market, strike_step))
+    if ticket.kind == "option":
+        return ticket.K > 0
+    return True
+
+
 def order_fair(order: OptionOrder, market: MarketState) -> float:
     """Per-contract fair of an order on the current surface."""
     return vanilla_price(
@@ -392,7 +412,13 @@ class TicketPreview:
 
 
 def ticket_preview(ticket: Ticket, market: MarketState, strike_step: float) -> TicketPreview:
-    """Fair value and execution cost of the ticket at the current market."""
+    """Fair value and execution cost of the ticket at the current market.
+
+    Raises:
+        ValueError: the ticket has a strike at or below zero (see :func:`ticket_priceable`).
+    """
+    if not ticket_priceable(ticket, market, strike_step):
+        raise ValueError("ticket_preview: the ticket has a strike at or below zero")
     if ticket.kind == "structure":
         orders = structure_orders(ticket, market, strike_step)
         net = 0.0
@@ -474,14 +500,6 @@ def quote_preview(net: float, gross: float, spread: float, lean: float) -> Quote
     mid = net + lean * gross
     half = (spread / 2) * gross
     return QuotePreview(mid=mid, bid=mid - half, ask=mid + half)
-
-
-def js_number(x: float) -> str:
-    """JavaScript ``String(x)`` for the sizes and strikes the messages print (an integral
-    value prints without ``.0``)."""
-    if math.isfinite(x) and x == math.floor(x) and abs(x) < 1e21:
-        return str(int(x))
-    return repr(x)
 
 
 def fill_message(side: str, rfq: RFQ, price: float, edge: float) -> str:
@@ -625,7 +643,9 @@ class SimSession:
 
     def request_rfq(self) -> RFQ | None:
         """ "Request a quote": a new client RFQ at the current spot (``None`` when the queue is
-        full). It is selected if nothing is; the last fill message is cleared."""
+        full). It is selected if no live RFQ is (React keeps any selected id; here an id left
+        behind by an RFQ that is gone counts as no selection); the last fill message is
+        cleared."""
         s = self.state
         if len(s.queue) >= MAX_QUEUE:
             return None
@@ -635,14 +655,16 @@ class SimSession:
         self.state = replace(
             s,
             queue=(*s.queue, rfq),
-            selected_id=s.selected_id if s.selected_id is not None else rfq.id,
+            selected_id=s.selected_id if s.selected is not None else rfq.id,
             fill=None,
         )
         return rfq
 
     def select_rfq(self, rfq_id: int) -> None:
-        """Put an RFQ in the quote box."""
-        self.state = replace(self.state, selected_id=rfq_id)
+        """Put a live RFQ in the quote box. An id no longer in the queue (a click on a chip
+        that was quoted, passed or expired while the page redrew) changes nothing."""
+        if any(r.id == rfq_id for r in self.state.queue):
+            self.state = replace(self.state, selected_id=rfq_id)
 
     def quote(self, spread: float, lean: float) -> bool | None:
         """Show your two-way on the selected RFQ (full width ``spread``·gross, mid shifted by
@@ -705,9 +727,13 @@ class SimSession:
         s = self.state
         self._set_book(flatten_gamma(s.book, s.market, HEDGE_TENOR, COSTS))
 
-    def execute_ticket(self, ticket: Ticket) -> None:
-        """ "Execute @ market": the future, the preset structure or the single option."""
+    def execute_ticket(self, ticket: Ticket) -> bool:
+        """ "Execute @ market": the future, the preset structure or the single option.
+        Returns False (and trades nothing) for a ticket that cannot be priced
+        (:func:`ticket_priceable`)."""
         s = self.state
+        if not ticket_priceable(ticket, s.market, self.cfg.strike_step):
+            return False
         if ticket.kind == "future":
             dq = ticket.size if ticket.side == "long" else -ticket.size
             self._set_book(hedge_trade(s.book, dq, s.market, COSTS))
@@ -723,6 +749,7 @@ class SimSession:
                 T=ticket.days / 365,
             )
             self._set_book(trade_option(s.book, order, s.market, COSTS))
+        return True
 
     def joint(self) -> JointHedge:
         """The advisor's combined hedge for the current book."""
@@ -791,7 +818,6 @@ __all__ = [
     "initial_market",
     "initial_state",
     "joint_orders",
-    "js_number",
     "miss_message",
     "order_fair",
     "plan_quantity",
@@ -799,4 +825,5 @@ __all__ = [
     "structure_orders",
     "ticket_from_plan",
     "ticket_preview",
+    "ticket_priceable",
 ]

@@ -24,18 +24,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Literal
 
-PresetName = Literal[
-    "call-vertical",
-    "put-vertical",
-    "straddle",
-    "strangle",
-    "risk-reversal",
-    "butterfly",
-    "iron-condor",
-    "calendar",
-]
-"""The standard index-desk structures (mirrors ``PresetName`` in
-web/src/engine/presets.ts)."""
+from eqd_desk.engine.presets import PresetName
 
 PRESET_NAMES: Final[tuple[PresetName, ...]] = (
     "call-vertical",
@@ -47,7 +36,9 @@ PRESET_NAMES: Final[tuple[PresetName, ...]] = (
     "iron-condor",
     "calendar",
 )
-"""Every preset, in the display order of the preset picker."""
+"""Every preset structure, in the display order of the preset picker. The names are the
+engine's :data:`~eqd_desk.engine.presets.PresetName` (the one definition; re-exported here
+for the content keys)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,3 +260,31 @@ def premium_side(net_premium: float) -> PremiumSide:
 # web/src/components/LegsEditor.tsx:30
 EMPTY_LEGS_HINT: Final = "No legs — pick a preset or add one."
 """Shown in the legs table when the structure has no legs."""
+
+# Streamlit-UI addition (the React Reset button has no tooltip). Filled with the builder's
+# defaults, so the text cannot drift from what Reset restores.
+RESET_HELP_TEMPLATE: Final = (
+    "Restore the seed market, a {tenor_days}-day tenor and {wing_pct} % wings, and rebuild "
+    "the {structure}."
+)
+"""Tooltip of the strategy builder's Reset. ``{tenor_days}``: the default preset tenor in
+calendar days; ``{wing_pct}``: the default wing in % of spot; ``{structure}``: the default
+preset's label, lower-cased."""
+
+
+__all__ = [
+    "CUSTOM_STRUCTURE_NOTE",
+    "EMPTY_LEGS_HINT",
+    "NET_PREMIUM_NOTE",
+    "PAYOFF_CAPTION",
+    "PREMIUM_SIDE_NOTES",
+    "PRESET_NAMES",
+    "RESET_HELP_TEMPLATE",
+    "STRATEGY_DOCS",
+    "STRATEGY_DOC_FIELD_LABELS",
+    "PremiumSide",
+    "PresetName",
+    "StrategyDoc",
+    "StrategyDocField",
+    "premium_side",
+]

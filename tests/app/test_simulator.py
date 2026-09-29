@@ -4,12 +4,18 @@ Drives the real page headless through its widgets and checks what it SHOWS (deco
 the rendered tables, metrics, messages) against the session and the engine: the clock, the
 RFQ flow (request, select, quote → fill or miss, pass), every hedge, the trade ticket, the
 advisor dialog and its plans, Reset, Replay and the episode end, and Auto on its timer.
+
+Auto reads the time through ``simulator_controls.clock``; the :func:`clock` fixture replaces
+it with a hand-driven one, so the Auto tests do not depend on how long a run takes.
+
+The inputs are remount-safe (:mod:`eqd_desk.app.ui.inputs`), so a widget is looked up by its
+canonical ``sim.*`` key through ``conftest.wkey``, resolved again after every run.
 """
 
 from __future__ import annotations
 
 import re
-import time
+from dataclasses import replace
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -17,9 +23,12 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from eqd_desk.app.ui import simulator_controls as ctl
-from eqd_desk.app.ui.format import MINUS, fmt_money, fmt_num
+from eqd_desk.app.ui.format import MINUS, fmt_money, fmt_num, js_round
+from eqd_desk.app.ui.inputs import gen_key
+from eqd_desk.app.ui.readout import NB_HYPHEN, NBSP, WORD_JOINER
 from eqd_desk.app.ui.sim_session import SimSession, Ticket, ticket_preview
-from eqd_desk.app.ui.simulator_inputs import gen_key, widget_key
+from eqd_desk.app.ui.simulator_display import book_units, flatten_instruments, tick_theta_caption
+from eqd_desk.app.ui.strategy_builder_state import WING_MAX_PCT
 from eqd_desk.content.simulator import (
     ADVISOR_SUBTITLE,
     ATTRIBUTION_TERMS,
@@ -28,9 +37,11 @@ from eqd_desk.content.simulator import (
     EPISODE_ENDED_MESSAGE,
     OPTION_HEDGE_CAPTION,
     SIM_CONCEPTS,
+    TICKET_UNPRICEABLE_HINT,
 )
+from eqd_desk.engine.presets import round_to
 from eqd_desk.engine.sim import advise_book, book_greeks_raw, realised_vol
-from tests.app.conftest import AppTestFactory
+from tests.app.conftest import AppTestFactory, slider_wkey, wkey
 
 pytestmark = pytest.mark.app
 
@@ -56,15 +67,6 @@ def desk(at: AppTest) -> SimSession:
     return sess
 
 
-def wkey(at: AppTest, key: str) -> str:
-    """The widget key an input with canonical ``key`` currently renders with."""
-    try:
-        generation = int(at.session_state[gen_key(key)])
-    except KeyError:
-        generation = 0
-    return widget_key(key, generation)
-
-
 def click(at: AppTest, key: str) -> AppTest:
     at.button(key=key).click().run()
     assert not at.exception, at.exception
@@ -75,11 +77,17 @@ def _unescape(text: str) -> str:
     return re.sub(r"\\(.)", r"\1", text)
 
 
+def _plain(text: str) -> str:
+    """``text`` with the readout's no-break spaces, hyphens and word joiners read as plain
+    text (they only steer line breaking, see :mod:`eqd_desk.app.ui.readout`)."""
+    return _unescape(text).replace(NBSP, " ").replace(NB_HYPHEN, "-").replace(WORD_JOINER, "")
+
+
 def shown(table: Any) -> list[list[str]]:
     """The cell TEXT a (Styler) table displays, row by row."""
     styler = table.proto.arrow_data.styler
     frame = pa.ipc.open_stream(styler.display_values).read_all().to_pandas()
-    return [[_unescape(str(v)) for v in row] for row in frame.itertuples(index=False)]
+    return [[_plain(str(v)) for v in row] for row in frame.itertuples(index=False)]
 
 
 def readout(at: AppTest, first_label: str) -> dict[str, str]:
@@ -106,6 +114,40 @@ def fill_first_rfq(at: AppTest) -> None:
     click(at, "sim.btn_quote")
 
 
+def table_rows(at: AppTest, first_label: str) -> list[list[str]]:
+    """Every row (label, value, unit) of the table whose first row is ``first_label``."""
+    for t in at.table:
+        rows = shown(t)
+        if rows and rows[0][0] == first_label:
+            return rows
+    raise AssertionError(f"no table starting with {first_label!r}")
+
+
+def charts_shown(at: AppTest) -> int:
+    return len(at.get("vega_lite_chart"))
+
+
+class FakeClock:
+    """A hand-driven Auto clock (seconds)."""
+
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    """Auto's clock, frozen until the test advances it."""
+    fake = FakeClock()
+    monkeypatch.setattr(ctl, "clock", fake)
+    return fake
+
+
 # ------------------------------------------------------------------ the page
 
 
@@ -120,16 +162,30 @@ def test_page_renders_the_desk_at_the_seed(app_test: AppTestFactory) -> None:
     }  # react_ref/4a_simulator.png
     card = readout(at, "P&L")
     assert card["Fill rate"] == "0% (0/0)"
-    assert card["Costs paid"] == f"{MINUS}0.00"
-    book = readout(at, "Delta")
-    assert list(book) == ["Delta", "Gamma", "Vega", "Theta", "Hedge (underlying)"]
+    assert card["Costs paid"] == "0.00"  # React: a red "−0.00"
+    book = table_rows(at, "Delta")
+    assert [r[0] for r in book] == ["Delta", "Gamma", "Vega", "Theta", "Hedge (underlying)"]
+    # every net greek carries its desk unit, and theta's calendar day is reconciled with the
+    # Tick's trading day
+    assert [r[2] for r in book] == book_units("USD")
+    assert has(at, tick_theta_caption(1 / 252))
     assert at.metric[0].value.endswith("[+0.00]")
+    assert any("-badge[" in t and "flat" in t for t in texts(at))  # React: "up" at zero
     page = texts(at)
-    for text in (EMPTY_QUEUE_HINT, EMPTY_BOOK_HINT, OPTION_HEDGE_CAPTION):
+    for text in (EMPTY_QUEUE_HINT, EMPTY_BOOK_HINT):
         assert text in page
+    assert has(at, f"{flatten_instruments()} {OPTION_HEDGE_CAPTION}")
+    # the Learn panel: the concepts, then the P&L-explain terms, one expander each (AppTest
+    # lists an expander with an icon as a Status block: they share one proto)
     assert [e.label for e in at.expander] == [c.title for c in SIM_CONCEPTS]
+    assert [e.label for e in at.status] == ["P&L explain terms"]
     assert all(any(t.label in p for p in page) for t in ATTRIBUTION_TERMS)
     assert [at.button(key=k).label for k in ("sim.btn_tick", "sim.btn_auto")] == ["Tick", "Auto"]
+    assert [at.button(key=k).label for k in ("sim.btn_flat_delta", "sim.btn_flat_vega")] == [
+        "Δ",
+        "Vega",
+    ]
+    assert charts_shown(at) == 3
     # the trade ticket's price & cost preview (react_ref/4a: price 174.27, cost −17.43)
     assert has(at, "price 174.27")
     assert has(at, f"cost {MINUS}17.43")
@@ -187,8 +243,8 @@ def test_quote_fills_and_updates_the_book_and_scorecard(app_test: AppTestFactory
 def test_quote_can_miss(app_test: AppTestFactory) -> None:
     at = open_page(app_test)
     click(at, "sim.btn_request")
-    at.slider(key=wkey(at, ctl.SPREAD_KEY)).set_value(0.2).run()
-    at.slider(key=wkey(at, ctl.LEAN_KEY)).set_value(0.03).run()
+    at.slider(key=slider_wkey(at, ctl.SPREAD_KEY)).set_value(0.2).run()
+    at.slider(key=slider_wkey(at, ctl.LEAN_KEY)).set_value(0.03).run()
     assert (at.session_state[ctl.SPREAD_KEY], at.session_state[ctl.LEAN_KEY]) == (0.2, 0.03)
     click(at, "sim.btn_quote")
     assert [_unescape(w.value) for w in at.warning] == ["Missed Put — client traded elsewhere"]
@@ -385,7 +441,7 @@ def test_replay_mode_loads_a_window(app_test: AppTestFactory) -> None:
     assert market["Spot"] == "6,329.94"  # react_ref/4b_simulator_replay.png
     assert market["ATM vol (implied)"] == "17.52%"
     assert market["Replay day"] == "0 / 120"
-    assert has(at, "2010 days on file")
+    assert has(at, "(2,010 days on file)")  # React prints 2010, which reads as a year
     click(at, "sim.btn_tick")
     assert readout(at, "Spot")["Replay day"] == "1 / 120"
     assert desk(at).state.market.spot == sess.window.points[1].spot
@@ -394,7 +450,7 @@ def test_replay_mode_loads_a_window(app_test: AppTestFactory) -> None:
 def test_episode_end_disables_tick_and_auto(app_test: AppTestFactory) -> None:
     at = open_page(app_test)
     at.button_group(key=wkey(at, ctl.MODE_KEY)).set_value("historical").run()
-    at.slider(key=wkey(at, ctl.REPLAY_LEN_KEY)).set_value(30).run()
+    at.slider(key=slider_wkey(at, ctl.REPLAY_LEN_KEY)).set_value(30).run()
     click(at, "sim.btn_reset")
     sess = desk(at)
     assert sess.replay_max == 30
@@ -407,30 +463,135 @@ def test_episode_end_disables_tick_and_auto(app_test: AppTestFactory) -> None:
     assert readout(at, "Spot")["Replay day"] == "30 / 30"
 
 
-def test_auto_steps_the_market_on_its_timer(app_test: AppTestFactory) -> None:
+def test_auto_steps_the_market_on_its_timer(app_test: AppTestFactory, clock: FakeClock) -> None:
     at = open_page(app_test)
     click(at, "sim.btn_auto")
     sess = desk(at)
     assert sess.playing
     assert at.button(key="sim.btn_auto").label == "Pause"
     assert sess.state.day == 0  # the first step comes one interval later
+    at.run()  # a rerun before the interval (a click) does not step
+    assert desk(at).state.day == 0
     # one interval (650 ms) later the fragment's timer reruns it: one day, client flow on
-    at.session_state[ctl.LAST_AUTO_KEY] = time.monotonic() - 0.7
+    clock.advance(0.65)
     at.run()
     assert desk(at).state.day == 1
     assert readout(at, "Spot")["Spot"] == fmt_money(desk(at).state.market.spot)
+    # a render that took two intervals is made up in one run
+    clock.advance(1.31)
+    at.run()
+    assert desk(at).state.day == 3
     click(at, "sim.btn_auto")
     assert not desk(at).playing
     assert at.button(key="sim.btn_auto").label == "Auto"
 
 
-def test_auto_pauses_when_the_user_was_away(app_test: AppTestFactory) -> None:
+def test_auto_pauses_when_the_user_was_away(app_test: AppTestFactory, clock: FakeClock) -> None:
     at = open_page(app_test)
     click(at, "sim.btn_auto")
-    at.session_state[ctl.LAST_AUTO_KEY] = time.monotonic() - 60
+    clock.advance(60)
     at.run()
     assert not desk(at).playing
     assert desk(at).state.day == 0
+
+
+def test_opening_the_advisor_pauses_auto(app_test: AppTestFactory, clock: FakeClock) -> None:
+    """The dialog is drawn by the Auto fragment: with the timer running it would be redrawn
+    on every step, racing its own buttons (a close that reopens, a plan that never loads)
+    while its overlay covers Pause. Opening it therefore pauses Auto."""
+    at = open_page(app_test)
+    fill_first_rfq(at)
+    click(at, "sim.btn_auto")
+    assert desk(at).playing
+    click(at, "sim.btn_advisor")
+    assert at.session_state[ctl.ADVISOR_KEY] is True
+    assert ADVISOR_SUBTITLE in texts(at)  # drawn by the page, after the desk's full rerun
+    assert ctl.ADVISOR_REQUEST_KEY not in at.session_state  # the one-shot request is spent
+    assert not desk(at).playing
+    assert at.button(key="sim.btn_auto").label == "Auto"
+    clock.advance(5.0)
+    at.run()
+    assert desk(at).state.day == 0  # nothing moves behind the dialog
+
+
+# ------------------------------------------------------------------ robustness
+
+
+def test_five_days_steps_five_ticks_and_stops_at_the_episode_end(app_test: AppTestFactory) -> None:
+    """Streamlit merges rapid Tick clicks while a run is in flight; "5 days" is five Ticks
+    in one click (no client flow)."""
+    at = open_page(app_test)
+    click(at, "sim.btn_tick_many")
+    s = desk(at).state
+    assert (s.day, len(s.history), s.queue) == (5, 6, ())
+    assert readout(at, "Spot")["Spot"] == fmt_money(s.market.spot)
+    at.button_group(key=wkey(at, ctl.MODE_KEY)).set_value("historical").run()
+    at.slider(key=slider_wkey(at, ctl.REPLAY_LEN_KEY)).set_value(30).run()
+    click(at, "sim.btn_reset")
+    for _ in range(27):
+        desk(at).tick()
+    click(at, "sim.btn_tick_many")
+    assert desk(at).state.day == 30  # three days left, not five
+    assert at.button(key="sim.btn_tick_many").disabled
+
+
+def test_the_iron_condor_wing_is_capped_and_never_crashes_the_desk(
+    app_test: AppTestFactory,
+) -> None:
+    """At a 50% wing the iron condor's outer put sits at 6300 − 2·3150 = 0 and the engine
+    had no price for it: the whole desk (P&L, charts, Learn, Execute) died with a math
+    domain error. The wing is capped at the strategy builder's WING_MAX_PCT."""
+    at = open_page(app_test)
+    at.button_group(key=wkey(at, ctl.TK_KIND)).set_value("structure").run()
+    at.button_group(key=wkey(at, ctl.TK_PRESET)).set_value("iron-condor").run()
+    wing = at.number_input(key=wkey(at, ctl.TK_WING))
+    assert wing.proto.max == WING_MAX_PCT
+    wing.set_value(WING_MAX_PCT).run()
+    assert not at.exception
+    assert has(at, "[net ")
+    assert charts_shown(at) == 3
+    # a stored value above the cap (an older session) is clamped, never priced
+    at.session_state[ctl.TK_WING] = 50
+    at.run()
+    assert not at.exception
+    assert at.session_state[ctl.TK_WING] == WING_MAX_PCT
+    assert charts_shown(at) == 3
+    click(at, "sim.btn_execute")
+    assert len(desk(at).state.book.trades) == 4
+
+
+def test_a_structure_the_market_cannot_price_disables_execute(app_test: AppTestFactory) -> None:
+    """Even within the cap, a spot of 100 puts the condor's outer put at 0: the ticket says
+    so and Execute is disabled, instead of the engine raising."""
+    at = open_page(app_test)
+    sess = desk(at)
+    sess.state = replace(sess.state, market=replace(sess.state.market, spot=100.0))
+    at.button_group(key=wkey(at, ctl.TK_KIND)).set_value("structure").run()
+    at.button_group(key=wkey(at, ctl.TK_PRESET)).set_value("iron-condor").run()
+    at.number_input(key=wkey(at, ctl.TK_WING)).set_value(WING_MAX_PCT).run()
+    assert not at.exception
+    assert has(at, TICKET_UNPRICEABLE_HINT)
+    assert at.button(key="sim.btn_execute").disabled
+    assert charts_shown(at) == 3
+
+
+def test_reset_and_replay_put_the_ticket_strike_back_at_the_money(
+    app_test: AppTestFactory,
+) -> None:
+    """A replay window opens wherever history was; a strike left at the last session's
+    level priced a deep in- or out-of-the-money option (price 0.00 at spot 3,253)."""
+    at = open_page(app_test)
+    at.number_input(key=wkey(at, ctl.TK_K)).set_value(6800).run()
+    at.button_group(key=wkey(at, ctl.MODE_KEY)).set_value("historical").run()
+    assert readout(at, "Spot")["Spot"] == "6,329.94"
+    assert at.session_state[ctl.TK_K] == 6325
+    assert at.number_input(key=wkey(at, ctl.TK_K)).value == 6325
+    at.number_input(key=wkey(at, ctl.TK_K)).set_value(5000).run()
+    click(at, "sim.btn_reset")  # a new window
+    atm = js_round(round_to(desk(at).state.market.spot, 25))
+    assert atm != 5000
+    assert at.session_state[ctl.TK_K] == atm
+    assert at.number_input(key=wkey(at, ctl.TK_K)).value == atm
 
 
 def test_widgets_are_sent_before_the_charts(
@@ -487,9 +648,9 @@ def test_inputs_always_carry_their_current_value_as_default(app_test: AppTestFac
     at.number_input(key=wkey(at, ctl.TK_SIZE)).set_value(4).run()
     at.button_group(key=wkey(at, ctl.TK_TYPE)).set_value("put").run()
     at.button_group(key=wkey(at, ctl.TK_SIDE)).set_value("short").run()
-    at.slider(key=wkey(at, ctl.SPREAD_KEY)).set_value(0.1).run()
-    at.slider(key=wkey(at, ctl.LEAN_KEY)).set_value(-0.01).run()
-    at.slider(key=wkey(at, ctl.SPEED_KEY)).set_value(900).run()
+    at.slider(key=slider_wkey(at, ctl.SPREAD_KEY)).set_value(0.1).run()
+    at.slider(key=slider_wkey(at, ctl.LEAN_KEY)).set_value(-0.01).run()
+    at.slider(key=slider_wkey(at, ctl.SPEED_KEY)).set_value(900).run()
     assert not at.exception
     ss = at.session_state
     assert (ss[ctl.TK_K], ss[ctl.TK_DAYS], ss[ctl.TK_SIZE]) == (6400, 35, 4)
@@ -505,7 +666,7 @@ def test_inputs_always_carry_their_current_value_as_default(app_test: AppTestFac
         (ctl.SPEED_KEY, 900),
     )
     for key, value in sliders:
-        assert list(at.slider(key=wkey(at, key)).proto.default) == [pytest.approx(value)]
+        assert list(at.slider(key=slider_wkey(at, key)).proto.default) == [pytest.approx(value)]
     type_group = at.button_group(key=wkey(at, ctl.TK_TYPE))
     assert list(type_group.proto.default) == [1]  # "put" is option 1 of (call, put)
     assert list(at.button_group(key=wkey(at, ctl.MODE_KEY)).proto.default) == [0]

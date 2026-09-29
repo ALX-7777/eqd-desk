@@ -3,16 +3,18 @@ main chart, the payoff grid, and the premium split (port of ``PlotsPanel.tsx`` a
 ``GreeksReadout.tsx``).
 
 Pure functions (engine in, DataFrames and floats out), no Streamlit: the page caches them
-with ``st.cache_data``. Every sweep uses the React resolution and ranges, and the React
-arithmetic for the grid (:func:`~eqd_desk.app.ui.charts.sweep_x`), so each point is the
-same engine call, on the same inputs, as the React app's:
+with ``st.cache_data``. Every sweep uses the React resolution and the React arithmetic for
+the grid (:func:`~eqd_desk.app.ui.charts.sweep_x`), so each point is the same engine call,
+on the same inputs, as the React app's. The vol and time sweeps span their inputs' own
+bounds, so the "current" marker is on the chart for any value the input accepts (React
+sweeps vol over 0.02 … 0.80 only, and loses the marker when σ is set above 80 %):
 
 ======== ========================= ====================================================
 x axis   range                     note
 ======== ========================= ====================================================
 ``S``    0.6 × spot … 1.4 × spot   ``spot`` = the SNAPSHOT spot, not the S slider, so
                                    the x range stays put while S is dragged
-``sigma`` 0.02 … 0.80              implied vol as a decimal
+``sigma`` 0.02 … 1.00              implied vol as a decimal: the σ input's own bounds
 ``T``    0.003 … 2 years           the T slider's own bounds
 ======== ========================= ====================================================
 
@@ -30,9 +32,10 @@ from typing import Final
 
 import pandas as pd
 
-from eqd_desk.app.ui.charts import sweep_x
+from eqd_desk.app.ui.bounds import SPOT_RANGE_FACTORS, T_BOUNDS, Bounds
+from eqd_desk.app.ui.charts import SPOT_AXIS_FORMAT, level_text, sweep_x
 from eqd_desk.app.ui.format import EM_DASH, to_fixed, to_precision
-from eqd_desk.app.ui.widgets import ReadoutRow, group_row
+from eqd_desk.app.ui.readout import ReadoutRow, group_row
 from eqd_desk.content import GREEK_KEYS
 from eqd_desk.content.greeks import GREEK_GROUPS, XAxisKey
 from eqd_desk.engine import GREEK_UNITS, BsmInputs, OptionAnalysis, OptionType, analyze_option
@@ -55,19 +58,25 @@ X_AXIS_LABELS: Final[Mapping[XAxisKey, str]] = MappingProxyType(
 completes the chart title ("Delta vs spot")."""
 
 X_AXIS_FORMATS: Final[Mapping[XAxisKey, str]] = MappingProxyType(
-    {"S": ",.0f", "sigma": ".0%", "T": ".2f"}
+    {"S": SPOT_AXIS_FORMAT, "sigma": ".0%", "T": ".2f"}
 )
-"""d3-format of the x-axis ticks: whole index points, whole vol percent, years to 2 dp
-(the React ``X_META[…].tick`` formats; spot gains a thousands separator)."""
+"""d3-format of the x-axis ticks: whole index points (the shared spot format, ``",.0f"``),
+whole vol percent, years to 2 dp (the React ``X_META[…].tick`` formats; spot gains a
+thousands separator)."""
 
-SIGMA_RANGE: Final = (0.02, 0.8)
-"""Implied-vol sweep range (decimal)."""
+SIGMA_BOUNDS: Final = Bounds(0.02, 1.0, 0.0025)
+"""Implied vol σ (decimal): 2 % … 100 %, in steps of a quarter vol point. The bounds of the
+lab's σ input (:func:`~eqd_desk.app.ui.greeks_lab_inputs.input_specs`) AND of the sweep
+against vol (:data:`SIGMA_RANGE`), one definition so the two cannot drift apart."""
 
-T_RANGE: Final = (0.003, 2.0)
-"""Time-to-expiry sweep range (years): the T slider's bounds."""
+SIGMA_RANGE: Final = (SIGMA_BOUNDS.lo, SIGMA_BOUNDS.hi)
+"""Implied-vol sweep range (decimal): the σ input's bounds (:data:`SIGMA_BOUNDS`), so the
+"current vol" marker is drawn for every σ the input accepts."""
 
-SPOT_RANGE_FACTORS: Final = (0.6, 1.4)
-"""Spot sweep range as multiples of the snapshot spot (also the payoff chart's x range)."""
+T_RANGE: Final = (T_BOUNDS.lo, T_BOUNDS.hi)
+"""Time-to-expiry sweep range (years): the T slider's bounds
+(:data:`~eqd_desk.app.ui.bounds.T_BOUNDS`). The spot sweep (and the payoff chart) spans
+:data:`~eqd_desk.app.ui.bounds.SPOT_RANGE_FACTORS` × the snapshot spot."""
 
 
 def x_range(x_axis: XAxisKey, spot: float) -> tuple[float, float]:
@@ -83,7 +92,7 @@ def x_tick(x_axis: XAxisKey, value: float) -> str:
     """The x value as the React tooltip prints it (``X_META[…].tick``): spot to whole points
     (``"6312"``), vol to whole percent (``"15%"``), time to 2 dp (``"0.08"``)."""
     if x_axis == "S":
-        return to_fixed(value, 0)
+        return level_text(value)
     if x_axis == "sigma":
         return f"{to_fixed(value * 100, 0)}%"
     return to_fixed(value, 2)
@@ -208,3 +217,25 @@ def raw_partial_rows(analysis: OptionAnalysis, *, selected: str | None = None) -
             for k in group.keys
         )
     return rows
+
+
+__all__ = [
+    "N_POINTS",
+    "SIGMA_BOUNDS",
+    "SIGMA_RANGE",
+    "T_RANGE",
+    "X_AXES",
+    "X_AXIS_CHOICES",
+    "X_AXIS_FORMATS",
+    "X_AXIS_LABELS",
+    "PremiumSplit",
+    "current_x",
+    "greek_sweep",
+    "intrinsic_value",
+    "payoff_curve",
+    "premium_split",
+    "raw_partial_rows",
+    "raw_scale_text",
+    "x_range",
+    "x_tick",
+]

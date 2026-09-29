@@ -5,12 +5,18 @@ Pure (no Streamlit): the panels (:mod:`eqd_desk.app.ui.simulator_panels`) render
 ``tests/ui/test_sim_session_parity.py`` checks them against the text the real React component
 rendered for the same seeded session. Numbers are formatted by :mod:`eqd_desk.app.ui.format`
 (JavaScript rounding), so a value prints exactly as in the React app.
+
+The last section lists where the page deliberately departs from the React text (a zero
+never shows a minus sign or a colour, the P&L badge can read "flat", the replay caption
+groups its day count, the book table carries units). Those are small functions the panels
+apply on top of the React strings, so the parity test keeps checking the strings beneath.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Literal
 
 import pandas as pd
@@ -23,12 +29,15 @@ from eqd_desk.app.ui.format import (
     fmt_pct,
     fmt_signed_money,
     fmt_signed_pct,
+    js_number,
     js_round,
     sign_class,
     to_locale,
 )
 from eqd_desk.app.ui.sim_session import (
+    COSTS,
     DELTA_WARN,
+    HEDGE_TENOR,
     JOINT_MIN_GAMMA,
     JOINT_MIN_VEGA,
     VEGA_WARN,
@@ -38,14 +47,19 @@ from eqd_desk.app.ui.sim_session import (
     QuotePreview,
     SimState,
     TicketPreview,
-    js_number,
     plan_quantity,
 )
 from eqd_desk.app.ui.theme import Tone
+from eqd_desk.app.ui.units import greek_unit
 from eqd_desk.content.simulator import (
     ATTRIBUTION_TERMS,
+    FLATTEN_DELTA_HELP_TEMPLATE,
+    FLATTEN_INSTRUMENTS_TEMPLATE,
+    FLATTEN_OPTION_HELP_TEMPLATE,
+    HEDGE_UNIT,
     REPLAY_CAPTION_TEMPLATE,
     RFQ_VERDICT_HINTS,
+    TICK_THETA_CAPTION_TEMPLATE,
     joint_hedge_role,
 )
 from eqd_desk.engine.sim import (
@@ -65,8 +79,9 @@ WARN_MARK: Final = "⚠"
 """Appended to a scorecard greek above its warning level."""
 
 BUY_ARROW: Final = "▲"
+"""An RFQ chip's marker when the client buys."""
 SELL_ARROW: Final = "▼"
-"""The client's side on an RFQ chip (buys ▲ / sells ▼)."""
+"""An RFQ chip's marker when the client sells."""
 
 VERDICT_ARROWS: Final[dict[RiskVerdict, str]] = {"hedges": "↓", "adds": "↑", "neutral": ""}
 """Risk flag of an RFQ: winning it cuts (↓) or adds (↑) risk."""
@@ -344,7 +359,49 @@ SEVERITY_TONES: Final[dict[Severity, Literal["red", "orange", "blue", "green"]]]
     "low": "blue",
     "ok": "green",
 }
-"""Badge colour of each advice severity."""
+"""Colour of each advice severity (a Streamlit Markdown colour name)."""
+
+SEVERITY_ICONS: Final[dict[Severity, str]] = {
+    "high": ":material/error:",
+    "medium": ":material/warning:",
+    "low": ":material/info:",
+    "ok": ":material/check_circle:",
+}
+"""Icon of each advice severity."""
+
+
+def severity_marker(severity: Severity) -> str:
+    """The advisor's severity marker as Markdown, the icon in the severity's colour
+    (``":red[:material/error:]"``; React: a coloured dot)."""
+    return f":{SEVERITY_TONES[severity]}[{SEVERITY_ICONS[severity]}]"
+
+
+# ------------------------------------------------------------------ hedge buttons
+
+FlattenTarget = Literal["delta", "vega", "gamma"]
+"""The greek a flatten button brings to zero."""
+
+
+def flatten_help(target: FlattenTarget) -> str:
+    """Tooltip of a flatten button, with the desk's hedge instrument and cost filled in:
+    the future at :data:`~eqd_desk.app.ui.sim_session.COSTS`' half-spread for delta
+    (``"… (1 bp of spot)."``), a :data:`~eqd_desk.app.ui.sim_session.HEDGE_TENOR` ATM call
+    at the option half-spread for vega and gamma (``"Trade a 60-day ATM call … (1% of
+    premium)."``)."""
+    if target == "delta":
+        bp = js_number(round(COSTS.underlying_half_spread * 1e4, 6))
+        return FLATTEN_DELTA_HELP_TEMPLATE.format(cost=f"{bp} bp")
+    return FLATTEN_OPTION_HELP_TEMPLATE.format(
+        days=js_round(HEDGE_TENOR * 365),
+        greek=target,
+        cost=fmt_pct(COSTS.option_half_spread, 0),
+    )
+
+
+def flatten_instruments() -> str:
+    """Which instrument each hedge button trades (the buttons are labelled with the greek
+    alone): ``"Δ trades the index future; vega and Γ trade a 60-day ATM call."``."""
+    return FLATTEN_INSTRUMENTS_TEMPLATE.format(days=js_round(HEDGE_TENOR * 365))
 
 
 def _instrument_text(
@@ -384,24 +441,102 @@ def show_joint(jh: JointHedge, greeks: BookGreeks) -> bool:
     )
 
 
+# ------------------------------------------------------------------ departures from React
+# Deliberate fixes the page applies on top of the React text above (React shows a red
+# "−0.00", a red "—", an "up" badge at zero and "2010 days on file", which reads as a year).
+
+_ZERO_TEXT: Final = re.compile(rf"[+\-{MINUS}]?0(?:\.0+)?%?")
+"""A value that prints as zero: ``0``, ``0.00``, ``−0.00``, ``+0.000``, ``0%``."""
+
+
+def prints_zero(text: str) -> bool:
+    """Whether a formatted value reads as zero (whatever its sign)."""
+    return _ZERO_TEXT.fullmatch(text) is not None
+
+
+def settled_value(text: str, tone: Tone | None) -> tuple[str, Tone | None]:
+    """A value as the page shows it: one that prints as zero loses its minus sign and its
+    colour (``−0.00`` in red → ``0.00`` in grey; a P&L keeps its ``+``, the React P&L
+    convention), and a missing value (``—``) is grey, not red."""
+    if text == EM_DASH:
+        return text, "zero"
+    if prints_zero(text):
+        return text.lstrip("-" + MINUS), "zero"
+    return text, tone
+
+
+def settled(line: StatLine) -> StatLine:
+    """``line`` with :func:`settled_value` applied (every stat table of the page)."""
+    text, tone = settled_value(line.text, line.tone)
+    return replace(line, text=text, tone=tone)
+
+
+PnlTrend = Literal["up", "down", "flat"]
+"""The P&L panel's badge."""
+
+
+def pnl_trend(pnl: float) -> PnlTrend:
+    """The P&L badge the page shows: React's :func:`pnl_tag`, but ``"flat"`` while the P&L
+    prints as zero (React says "up" at +0.00)."""
+    return "flat" if prints_zero(fmt_money(pnl)) else pnl_tag(pnl)
+
+
+def ticket_cost_view(p: TicketPreview) -> tuple[str, Tone]:
+    """The ticket's execution cost as the page shows it: React's ``cost −17.43`` in red, or
+    ``cost 0.00`` in grey when the cost prints as zero (a far out-of-the-money option)."""
+    _, text = ticket_preview_text(p)
+    if prints_zero(fmt_money(p.cost)):
+        return f"cost {fmt_money(abs(p.cost))}", "zero"
+    return text, "neg"
+
+
+def grouped_replay_caption(count: int) -> str:
+    """:func:`replay_caption` with the day count grouped (``"(2,010 days on file)"``; React
+    prints ``2010``, which reads as a year)."""
+    return REPLAY_CAPTION_TEMPLATE.format(count=to_locale(float(count)))
+
+
+def book_units(currency: str) -> list[str]:
+    """The unit of each :func:`book_rows` line, in order: the desk unit of each greek
+    (:func:`~eqd_desk.app.ui.units.greek_unit`: theta is per CALENDAR day) and the hedge's
+    :data:`~eqd_desk.content.simulator.HEDGE_UNIT`. React prints the numbers alone."""
+    return [*(greek_unit(k, currency) for k in BOOK_GREEKS), HEDGE_UNIT]
+
+
+def tick_theta_caption(dt: float) -> str:
+    """Why a Tick's theta P&L is bigger than the book's Theta: a Tick is one trading day
+    (``dt`` years, 1/252) while theta is quoted per calendar day, so a Tick's theta term is
+    ``365·dt`` (≈ 1.45) times Theta."""
+    return TICK_THETA_CAPTION_TEMPLATE.format(
+        dt=f"1/{js_round(1 / dt)}", days=to_locale(365 * dt, 2, 2)
+    )
+
+
 __all__ = [
     "BLOTTER_ROWS",
     "BOOK_GREEKS",
     "BUY_ARROW",
     "SELL_ARROW",
+    "SEVERITY_ICONS",
     "SEVERITY_TONES",
     "VERDICT_ARROWS",
     "WARN_MARK",
     "BlotterRow",
+    "FlattenTarget",
+    "PnlTrend",
     "RfqChip",
     "StatLine",
     "attribution_bars",
     "bid_ask_text",
     "blotter_rows",
     "book_rows",
+    "book_units",
     "days_text",
     "edge_costs_text",
     "fill_rate",
+    "flatten_help",
+    "flatten_instruments",
+    "grouped_replay_caption",
     "history_frame",
     "impact_text",
     "joint_leg_line",
@@ -410,16 +545,23 @@ __all__ = [
     "plan_line",
     "pnl_caption",
     "pnl_tag",
+    "pnl_trend",
     "positions_count",
     "positions_heading",
+    "prints_zero",
     "replay_caption",
     "rfq_chip",
     "rfq_detail",
     "rfq_legs",
     "scorecard",
+    "settled",
+    "settled_value",
+    "severity_marker",
     "show_joint",
     "speed_text",
     "spread_text",
+    "tick_theta_caption",
+    "ticket_cost_view",
     "ticket_preview_text",
     "warned",
 ]

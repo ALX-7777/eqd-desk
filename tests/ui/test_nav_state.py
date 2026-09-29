@@ -1,12 +1,12 @@
-"""The page registry points at real scripts, and the pure market helpers of ``ui.state``
-reproduce the React constants."""
+"""The page registry points at real scripts (and names each browser tab), and ``ui.state``
+shares one copy of the market data."""
 
 from __future__ import annotations
 
 import dataclasses
 
 from eqd_desk.app.ui import state
-from eqd_desk.app.ui.nav import APP_DIR, HOME, PAGES, TOOLS
+from eqd_desk.app.ui.nav import APP_DIR, APP_NAME, HOME, PAGES, TOOLS, page_spec
 from eqd_desk.cli import APP_SCRIPT
 from eqd_desk.data import UNDERLYINGS, load_snapshot
 
@@ -28,16 +28,6 @@ def test_page_registry() -> None:
     assert len(set(slugs)) == len(slugs)
 
 
-def test_strike_and_level_steps_match_react() -> None:
-    assert state.strike_step(6312.45) == 25.0
-    assert state.strike_step(4000.0) == 25.0
-    assert state.strike_step(631.0) == 5.0
-    assert state.level_step(6312.45) == 1.0
-    assert state.level_step(631.0) == 0.5
-    assert state.level_step(63.0) == 0.1
-    assert state.strike_step() == (25.0 if load_snapshot().spot >= 2000 else 5.0)
-
-
 def test_shared_data_accessors() -> None:
     snap = state.snapshot()
     assert snap is load_snapshot()  # cached once per process, never copied
@@ -48,3 +38,12 @@ def test_shared_data_accessors() -> None:
     assert state.underlying(unknown) == UNDERLYINGS["spx"]
     sx5e = dataclasses.replace(snap, underlying="sx5e")
     assert state.underlying(sx5e) == UNDERLYINGS["sx5e"]
+
+
+def test_each_page_names_its_browser_tab() -> None:
+    assert HOME.tab_title == APP_NAME == "EQD Desk"
+    assert [p.tab_title for p in TOOLS] == [f"{p.title} · EQD Desk" for p in TOOLS]
+    assert len({p.tab_title for p in PAGES}) == len(PAGES)  # every tab title is distinct
+    for page in PAGES:
+        assert page_spec(page.title) is page
+    assert page_spec("no such page") is HOME

@@ -1,5 +1,6 @@
-"""The page registry: one source of truth for every page's file, title, icon and URL, used by
-the entrypoint (``st.navigation``) and the overview's tool cards (``st.page_link``)."""
+"""The page registry: one source of truth for the product name and every page's file, title,
+icon, URL and browser-tab title, used by the entrypoint (``st.navigation``,
+``st.set_page_config``) and the overview's tool cards (``st.page_link``). Pure: no Streamlit."""
 
 from __future__ import annotations
 
@@ -9,6 +10,15 @@ from typing import Final
 
 APP_DIR: Final = Path(__file__).resolve().parents[1]
 """``eqd_desk/app``: the directory of the entrypoint script."""
+
+APP_NAME: Final = "EQD Desk"
+"""Product name shown in the header strip and the browser tab."""
+
+APP_ICON: Final = ":material/finance_mode:"
+"""App icon (browser tab + header brand mark)."""
+
+TAB_TITLE_SEPARATOR: Final = " · "
+"""Between a page's title and the product name in a browser tab ("Greeks lab · EQD Desk")."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +41,14 @@ class PageSpec:
     def path(self) -> Path:
         """Absolute path of the page script."""
         return APP_DIR / self.file
+
+    @property
+    def tab_title(self) -> str:
+        """The browser-tab title: ``"Greeks lab · EQD Desk"`` (the overview: the product
+        name alone), so each tab and each history entry names its page."""
+        if self.url_path == "":
+            return APP_NAME
+        return f"{self.title}{TAB_TITLE_SEPARATOR}{APP_NAME}"
 
 
 HOME: Final = PageSpec(
@@ -76,3 +94,26 @@ PAGES: Final[tuple[PageSpec, ...]] = (HOME, GREEKS_LAB, STRATEGY_BUILDER, EXOTIC
 
 TOOLS: Final[tuple[PageSpec, ...]] = PAGES[1:]
 """The four training tools (every page but the overview)."""
+
+
+def page_spec(title: str) -> PageSpec:
+    """The registered page with navigation ``title`` (what ``st.navigation`` returns as the
+    page's ``title``); the overview for an unknown title."""
+    return next((spec for spec in PAGES if spec.title == title), HOME)
+
+
+__all__ = [
+    "APP_DIR",
+    "APP_ICON",
+    "APP_NAME",
+    "EXOTICS",
+    "GREEKS_LAB",
+    "HOME",
+    "PAGES",
+    "SIMULATOR",
+    "STRATEGY_BUILDER",
+    "TAB_TITLE_SEPARATOR",
+    "TOOLS",
+    "PageSpec",
+    "page_spec",
+]

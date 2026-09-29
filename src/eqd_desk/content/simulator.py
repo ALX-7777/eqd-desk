@@ -224,3 +224,114 @@ def joint_hedge_role(instrument: Literal["future", "option"], tenor_days: float 
     if tenor_days and tenor_days <= JOINT_HEDGE_GAMMA_MAX_TENOR_DAYS:
         return JOINT_HEDGE_ROLE_LABELS["gamma"]
     return JOINT_HEDGE_ROLE_LABELS["vega"]
+
+
+# ------------------------------------------------------------------ Streamlit-UI additions
+# Tooltips of the Streamlit simulator's controls; the React buttons and sliders have none.
+# The hedge-button templates are filled from the desk's cost model and hedge tenor (see
+# ``eqd_desk.app.ui.simulator_display.flatten_help``), so their numbers cannot drift.
+
+TICK_HELP: Final = "Advance the market one trading day."
+"""Tooltip of the Tick button."""
+
+MULTI_TICK_HELP_TEMPLATE: Final = (
+    "Advance the market {days} trading days at once ({days} Ticks, no new client flow)."
+)
+"""Tooltip of the multi-day step button. ``{days}``: how many days it advances."""
+
+AUTO_HELP: Final = "Run the market on a timer; clients send RFQs while it runs."
+"""Tooltip of the Auto / Pause button."""
+
+AUTO_SPEED_HELP: Final = "Milliseconds per simulated trading day while Auto runs."
+"""Tooltip of the Auto speed slider."""
+
+SPREAD_HELP: Final = "Full bid/ask width as a fraction of the package's gross premium."
+"""Tooltip of the quote box's spread slider."""
+
+LEAN_HELP: Final = "Shift your mid (fraction of gross): up to win client SELLS, down to win BUYS."
+"""Tooltip of the quote box's lean slider."""
+
+ADVISOR_HELP: Final = (
+    "Ranked advice on your live book, with concrete hedges. Opening it pauses Auto."
+)
+"""Tooltip of the Advisor button."""
+
+HEDGE_UNIT: Final = "index units"
+"""Unit of the book's future hedge position (one unit moves one currency unit per index
+point, like a delta of 1)."""
+
+TICK_THETA_CAPTION_TEMPLATE: Final = (
+    "Theta is per calendar day; a Tick is one trading day ({dt} y ≈ {days} calendar days), "
+    "so a Tick's theta P&L ≈ {days} × Theta."
+)
+"""Caption under the book's net greeks: why the P&L explain's theta bar grows faster than
+the Theta shown. ``{dt}``: the step as a fraction of a year ("1/252"); ``{days}``: the
+calendar days it spans ("1.45")."""
+
+TICKET_UNPRICEABLE_HINT: Final = (
+    "This wing puts a strike at or below zero: narrow it to price the structure."
+)
+"""Shown instead of the trade ticket's price when a structure's wing is too wide for the
+current spot (the Execute button is then disabled)."""
+
+FLATTEN_LABEL: Final = "Flatten"
+"""Label in front of the three hedge buttons (Δ, vega, Γ)."""
+
+FLATTEN_INSTRUMENTS_TEMPLATE: Final = (
+    "Δ trades the index future; vega and Γ trade a {days}-day ATM call."
+)
+"""First sentence of the caption under the hedge buttons (the React caption follows it):
+which instrument each button trades. ``{days}``: the hedge option's tenor in calendar
+days."""
+
+FLATTEN_DELTA_HELP_TEMPLATE: Final = (
+    "Trade the index future to bring net delta to zero ({cost} of spot)."
+)
+"""Tooltip of the flatten-delta button. ``{cost}``: the future's half-spread ("1 bp")."""
+
+FLATTEN_OPTION_HELP_TEMPLATE: Final = (
+    "Trade a {days}-day ATM call to bring net {greek} to zero ({cost} of premium)."
+)
+"""Tooltip of the flatten-vega and flatten-gamma buttons. ``{days}``: the hedge option's
+tenor in calendar days; ``{greek}``: "vega" or "gamma"; ``{cost}``: the option half-spread
+("1%")."""
+
+
+__all__ = [
+    "ADVISOR_HELP",
+    "ADVISOR_SUBTITLE",
+    "ATTRIBUTION_TERMS",
+    "AUTO_HELP",
+    "AUTO_SPEED_HELP",
+    "EMPTY_BOOK_HINT",
+    "EMPTY_QUEUE_HINT",
+    "EPISODE_ENDED_MESSAGE",
+    "FILL_MESSAGE_TEMPLATE",
+    "FLATTEN_DELTA_HELP_TEMPLATE",
+    "FLATTEN_INSTRUMENTS_TEMPLATE",
+    "FLATTEN_LABEL",
+    "FLATTEN_OPTION_HELP_TEMPLATE",
+    "HEDGE_UNIT",
+    "JOINT_HEDGE_GAMMA_MAX_TENOR_DAYS",
+    "JOINT_HEDGE_ROLE_LABELS",
+    "JOINT_HEDGE_SUBTITLE",
+    "JOINT_HEDGE_TITLE",
+    "LEAN_HELP",
+    "MISS_MESSAGE_TEMPLATE",
+    "MULTI_TICK_HELP_TEMPLATE",
+    "OPTION_HEDGE_CAPTION",
+    "REPLAY_CAPTION_TEMPLATE",
+    "REPLAY_LENGTH_HINT",
+    "RFQ_VERDICT_HINTS",
+    "SIM_CONCEPTS",
+    "SPREAD_HELP",
+    "TICKET_UNPRICEABLE_HINT",
+    "TICK_HELP",
+    "TICK_THETA_CAPTION_TEMPLATE",
+    "AttributionKey",
+    "AttributionTerm",
+    "JointHedgeRole",
+    "RfqVerdict",
+    "SimConcept",
+    "joint_hedge_role",
+]

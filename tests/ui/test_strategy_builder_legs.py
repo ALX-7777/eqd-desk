@@ -8,19 +8,32 @@ import math
 
 import pytest
 
+from eqd_desk.app.ui.bounds import SPOT_RANGE_FACTORS
 from eqd_desk.app.ui.strategy_builder_legs import (
+    CALENDAR_BACK_DAYS,
     CUSTOM,
     CUSTOM_LABEL,
+    DAYS_LIMITS,
     DEFAULT_PRESET,
     DEFAULT_TENOR_DAYS,
     DEFAULT_WING_PCT,
+    LEG_DAYS_MAX,
+    LEG_FIELDS,
     MIN_VOL,
     PRESET_LABELS,
+    QUANTITY_LIMITS,
+    STRIKE_LIMITS,
+    TENOR_MAX_DAYS,
+    VOL_LIMITS,
+    FieldLimits,
     custom_leg_id,
     edit_leg,
+    field_values,
     flip_side,
     flip_type,
+    leg_button_help,
     leg_display,
+    leg_field_label,
     make_preset,
     new_leg,
     remove_leg,
@@ -30,7 +43,7 @@ from eqd_desk.app.ui.strategy_builder_legs import (
     update_leg,
 )
 from eqd_desk.data import default_surface, load_snapshot
-from eqd_desk.engine.presets import PRESETS, PresetParams, build_preset
+from eqd_desk.engine.presets import CALENDAR_BACK_OFFSET, PRESETS, PresetParams, build_preset
 from eqd_desk.engine.strategy import Leg
 
 SNAP = load_snapshot()
@@ -159,6 +172,118 @@ def test_leg_display_rounds_like_the_react_fields() -> None:
     assert shown.vol_pct == 16.72
     assert isinstance(shown.quantity, int)
     assert isinstance(shown.days, int)
+
+
+def test_field_values_are_the_displayed_fields_in_table_order() -> None:
+    leg = dataclasses.replace(LEG, K=6312.456, T=29.6 / 365, quantity=2)
+    values = field_values(leg)
+    assert tuple(values) == LEG_FIELDS == ("quantity", "K", "days", "vol")
+    assert values == {"quantity": 2, "K": 6312.46, "days": 30, "vol": 16.72}
+    # every field round-trips: typing back what is shown keeps the (rounded) value
+    for field, shown in values.items():
+        assert field_values(edit_leg(leg, field, shown))[field] == shown
+
+
+def test_labels_and_tooltips_name_the_leg() -> None:
+    assert leg_field_label(2, "K") == "Leg 2 strike"
+    assert [leg_field_label(1, f) for f in LEG_FIELDS] == [
+        "Leg 1 quantity",
+        "Leg 1 strike",
+        "Leg 1 expiry (days)",
+        "Leg 1 vol (%)",
+    ]
+    assert leg_button_help(3, "side") == "Leg 3: toggle long / short"
+    assert leg_button_help(3, "type") == "Leg 3: toggle call / put"
+    assert leg_button_help(3, "remove") == "Remove leg 3"
+
+
+# ------------------------------------------------------------------ field bounds
+
+
+def test_field_limits_widen_only_to_contain_the_shown_value() -> None:
+    days = FieldLimits(lo=1, hi=3650, step=1)
+    assert days.around(30) == days  # inside: unchanged
+    assert days.around(3710) == FieldLimits(lo=1, hi=3710, step=1)
+    assert days.around(0) == FieldLimits(lo=0, hi=3650, step=1)
+    vol = FieldLimits(lo=1.0, hi=300.0, step=0.5)
+    assert vol.around(470.23) == FieldLimits(lo=1.0, hi=470.23, step=0.5)
+    unbounded = FieldLimits(lo=0.01, hi=None, step=5.0)
+    assert unbounded.around(1e6) == unbounded
+
+
+def test_field_limits_match_the_edit_rules() -> None:
+    # a field accepts exactly what edit_leg keeps: >= 1 contract, >= 1 day, >= 1 vol point
+    assert (QUANTITY_LIMITS.lo, DAYS_LIMITS.lo, VOL_LIMITS.lo) == (1, 1, MIN_VOL * 100)
+    assert STRIKE_LIMITS.lo > 0
+    assert STRIKE_LIMITS.hi is None
+    # integer columns stay integer inputs, the others float inputs
+    assert isinstance(QUANTITY_LIMITS.step, int)
+    assert isinstance(DAYS_LIMITS.step, int)
+    assert isinstance(STRIKE_LIMITS.step, float)
+    assert isinstance(VOL_LIMITS.step, float)
+
+
+def test_the_expiry_field_reaches_the_longest_calendar_back_leg() -> None:
+    assert CALENDAR_BACK_DAYS == 60
+    assert CALENDAR_BACK_DAYS / 365 == CALENDAR_BACK_OFFSET
+    assert LEG_DAYS_MAX == TENOR_MAX_DAYS + CALENDAR_BACK_DAYS == 3710
+    back = make_preset(
+        "calendar",
+        spot=SNAP.spot,
+        tenor_days=TENOR_MAX_DAYS,
+        wing_pct=5,
+        strike_step=25,
+        vol_for=SURFACE.get_vol,
+    )[1]
+    assert leg_display(back).days == LEG_DAYS_MAX == DAYS_LIMITS.hi
+
+
+def _inside(lo: float, hi: float | None, value: float) -> bool:
+    return lo <= value and (hi is None or value <= hi)
+
+
+@pytest.mark.parametrize("name", [p.name for p in PRESETS])
+@pytest.mark.parametrize("spot_factor", SPOT_RANGE_FACTORS)
+@pytest.mark.parametrize(("tenor", "wing"), [(1, 1), (TENOR_MAX_DAYS, 45)])
+def test_every_preset_value_fits_its_field(
+    name: str, spot_factor: float, tenor: int, wing: int
+) -> None:
+    """No preset, at either end of the spot slider and of the tenor and wing fields, builds
+    a leg its row's fields would clamp: the table always shows the leg that is priced."""
+    legs = make_preset(
+        name,  # type: ignore[arg-type]
+        spot=SNAP.spot * spot_factor,
+        tenor_days=tenor,
+        wing_pct=wing,
+        strike_step=25,
+        vol_for=SURFACE.get_vol,
+    )
+    for leg in legs:
+        shown = leg_display(leg)
+        # contracts, strikes and expiries fit the fixed bounds ...
+        assert _inside(QUANTITY_LIMITS.lo, QUANTITY_LIMITS.hi, shown.quantity), leg
+        assert _inside(STRIKE_LIMITS.lo, STRIKE_LIMITS.hi, shown.strike), leg
+        assert _inside(DAYS_LIMITS.lo, DAYS_LIMITS.hi, shown.days), leg
+        # ... and a far wing's smile vol, which can exceed the cap, fits the widened ones
+        vol = VOL_LIMITS.around(shown.vol_pct)
+        assert _inside(vol.lo, vol.hi, shown.vol_pct), leg
+
+
+def test_a_steep_wing_vol_is_above_the_usual_cap_and_the_field_widens() -> None:
+    # 45 % iron condor: the outer put is struck at 600, where the seed smile gives ~470 %
+    condor = make_preset(
+        "iron-condor",
+        spot=SNAP.spot,
+        tenor_days=30,
+        wing_pct=45,
+        strike_step=25,
+        vol_for=SURFACE.get_vol,
+    )
+    shown = leg_display(condor[0])
+    assert shown.strike == 600.0
+    assert VOL_LIMITS.hi is not None
+    assert shown.vol_pct > VOL_LIMITS.hi
+    assert VOL_LIMITS.around(shown.vol_pct).hi == shown.vol_pct
 
 
 # ------------------------------------------------------------------ edits

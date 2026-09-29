@@ -24,6 +24,11 @@ vol %      vol points, 2 dp         ``sigma`` = points / 100 (decimal)
 The table shows ROUNDED values (``round2``, whole days) but an edit only replaces the one
 field that was edited, so an untouched leg keeps its full-precision strike, expiry and
 surface vol, and the position prices exactly as in the React app.
+
+Each field has bounds and a step (:class:`FieldLimits`), and the bounds always contain the
+value the field shows for its leg (:meth:`FieldLimits.around`): a field only ever limits
+what the user types, never a value a preset put there. (A calendar's back leg expires 60
+days after the longest tenor; the smile can put a far wing's vol above the usual cap.)
 """
 
 from __future__ import annotations
@@ -36,7 +41,9 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 from eqd_desk.app.ui.format import js_round
+from eqd_desk.engine import OptionType
 from eqd_desk.engine.presets import (
+    CALENDAR_BACK_OFFSET,
     PRESETS,
     PresetName,
     PresetParams,
@@ -45,7 +52,6 @@ from eqd_desk.engine.presets import (
     round_to,
 )
 from eqd_desk.engine.strategy import Leg, LegSide
-from eqd_desk.engine.types import OptionType
 
 DAYS_PER_YEAR: Final = 365
 """Day count of the tenor / expiry fields: calendar days, ACT/365 (React ``/ 365``)."""
@@ -56,6 +62,13 @@ DEFAULT_TENOR_DAYS: Final = 30
 """Default preset tenor, calendar days."""
 DEFAULT_WING_PCT: Final = 5
 """Default wing width, % of spot."""
+
+TENOR_MAX_DAYS: Final = 3650
+"""Longest preset tenor accepted (10 years)."""
+CALENDAR_BACK_DAYS: Final = js_round(CALENDAR_BACK_OFFSET * DAYS_PER_YEAR)
+"""How many days after the preset tenor a calendar's back leg expires (60)."""
+LEG_DAYS_MAX: Final = TENOR_MAX_DAYS + CALENDAR_BACK_DAYS
+"""Longest expiry a leg's field accepts: the back leg of the longest calendar."""
 
 MIN_VOL: Final = 0.01
 """Lowest vol a leg can be edited to (decimal: 1 vol point), as ``LegsEditor.tsx``."""
@@ -76,6 +89,25 @@ CUSTOM_LABEL: Final = "Custom structure"
 
 LegField = Literal["quantity", "K", "days", "vol"]
 """An editable numeric column of the legs table."""
+
+LEG_FIELDS: Final[tuple[LegField, ...]] = ("quantity", "K", "days", "vol")
+"""The editable numeric columns, in table order (qty, strike, exp (d), vol %)."""
+
+FIELD_NAMES: Final[Mapping[LegField, str]] = MappingProxyType(
+    {"quantity": "quantity", "K": "strike", "days": "expiry (days)", "vol": "vol (%)"}
+)
+"""Spoken name of each numeric column (the visible headings are abbreviated)."""
+
+LegButton = Literal["side", "type", "remove"]
+"""A button of a leg's row: the L / S toggle, the C / P toggle, the remove ×."""
+
+_BUTTON_HELP: Final[Mapping[LegButton, str]] = MappingProxyType(
+    {
+        "side": "Leg {n}: toggle long / short",
+        "type": "Leg {n}: toggle call / put",
+        "remove": "Remove leg {n}",
+    }
+)
 
 
 def structure_label(structure: Structure) -> str:
@@ -148,6 +180,20 @@ def new_leg(
 # ------------------------------------------------------------------ what the table shows
 
 
+def leg_field_label(n: int, field: LegField) -> str:
+    """Label of the ``field`` input of the ``n``-th leg (1-based): ``"Leg 2 strike"``.
+
+    The table hides it (the column headings name the fields), but screen readers announce
+    it, so each field says which leg it belongs to.
+    """
+    return f"Leg {n} {FIELD_NAMES[field]}"
+
+
+def leg_button_help(n: int, button: LegButton) -> str:
+    """Tooltip of a button of the ``n``-th leg's row (1-based): ``"Remove leg 2"``."""
+    return _BUTTON_HELP[button].format(n=n)
+
+
 @dataclass(frozen=True, slots=True)
 class LegDisplay:
     """A leg in the table's trader units (the values its fields show)."""
@@ -170,6 +216,57 @@ def leg_display(leg: Leg) -> LegDisplay:
         days=js_round(leg.T * DAYS_PER_YEAR),
         vol_pct=round2(leg.sigma * 100),
     )
+
+
+def field_values(leg: Leg) -> dict[LegField, float]:
+    """The value each numeric field of ``leg``'s row shows (:func:`leg_display`), keyed by
+    :data:`LegField` in table order: what the page seeds the row's inputs with."""
+    shown = leg_display(leg)
+    return {
+        "quantity": shown.quantity,
+        "K": shown.strike,
+        "days": shown.days,
+        "vol": shown.vol_pct,
+    }
+
+
+# ------------------------------------------------------------------ field bounds
+
+
+@dataclass(frozen=True, slots=True)
+class FieldLimits[N: (int, float)]:
+    """Bounds and step of one numeric column of the legs table, in its trader units
+    (``int`` for contracts and days, ``float`` for strike and vol points)."""
+
+    lo: N
+    """Lowest value the field accepts."""
+    hi: N | None
+    """Highest value the field accepts (``None``: no upper bound)."""
+    step: N
+    """Increment of the field's arrow keys (and step buttons, when it is wide enough)."""
+
+    def around(self, shown: N) -> FieldLimits[N]:
+        """These limits widened just enough to contain ``shown``, the value the field
+        displays for its leg.
+
+        A number field clamps whatever it is given, so a bound below a preset's value would
+        make the table disagree with the leg that is priced: the field would show 3650 days
+        for a calendar back leg priced at 3710. Widening instead means a field only ever
+        limits what the user types.
+        """
+        lo = min(self.lo, shown)
+        hi = None if self.hi is None else max(self.hi, shown)
+        return FieldLimits(lo=lo, hi=hi, step=self.step)
+
+
+QUANTITY_LIMITS: Final = FieldLimits(lo=1, hi=1000, step=1)
+"""Contracts per leg."""
+STRIKE_LIMITS: Final = FieldLimits(lo=0.01, hi=None, step=5.0)
+"""Strike, index points (a strike must stay positive: ln(S/K))."""
+DAYS_LIMITS: Final = FieldLimits(lo=1, hi=LEG_DAYS_MAX, step=1)
+"""Expiry, whole calendar days (ACT/365)."""
+VOL_LIMITS: Final = FieldLimits(lo=MIN_VOL * 100, hi=300.0, step=0.5)
+"""Implied vol, vol points."""
 
 
 # ------------------------------------------------------------------ edits
@@ -235,22 +332,36 @@ def custom_leg_id(n: int) -> str:
 
 
 __all__ = [
+    "CALENDAR_BACK_DAYS",
     "CUSTOM",
     "CUSTOM_LABEL",
+    "DAYS_LIMITS",
     "DAYS_PER_YEAR",
     "DEFAULT_PRESET",
     "DEFAULT_TENOR_DAYS",
     "DEFAULT_WING_PCT",
+    "FIELD_NAMES",
+    "LEG_DAYS_MAX",
+    "LEG_FIELDS",
     "MIN_VOL",
     "PRESET_LABELS",
+    "QUANTITY_LIMITS",
+    "STRIKE_LIMITS",
+    "TENOR_MAX_DAYS",
+    "VOL_LIMITS",
+    "FieldLimits",
+    "LegButton",
     "LegDisplay",
     "LegField",
     "Structure",
     "custom_leg_id",
     "edit_leg",
+    "field_values",
     "flip_side",
     "flip_type",
+    "leg_button_help",
     "leg_display",
+    "leg_field_label",
     "make_preset",
     "new_leg",
     "remove_leg",

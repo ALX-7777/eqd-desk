@@ -25,7 +25,7 @@ from typing import Final, Literal
 
 import pandas as pd
 
-from eqd_desk.app.ui.charts import sweep_x
+from eqd_desk.app.ui.charts import level_text, sweep_x
 from eqd_desk.app.ui.format import js_round, to_fixed
 from eqd_desk.engine import ReportedGreeks
 from eqd_desk.engine.strategy import (
@@ -60,7 +60,7 @@ FRONT_EXPIRY_GAP: Final = 1e-4
 StrategyXAxis = Literal["S", "vol", "time"]
 """What the aggregate greek is plotted against: spot, a parallel vol shift, elapsed time."""
 
-X_AXIS_OPTIONS: Final[Mapping[StrategyXAxis, str]] = MappingProxyType(
+X_AXIS_CHOICES: Final[Mapping[StrategyXAxis, str]] = MappingProxyType(
     {"S": "Spot", "vol": "Vol", "time": "Time"}
 )
 """Segmented-control labels of the x-axis picker, in React's order."""
@@ -179,14 +179,15 @@ class AxisMeta:
     """d3 format of the plotted axis ticks (``None`` = Vega's default)."""
 
     def tick(self, x_plot: float) -> str:
-        """The React tick/tooltip text of a PLOTTED x: ``"6312"``, ``"+5pt"``, ``"12d"``."""
+        """The tooltip text of a PLOTTED x: ``"6,312"`` (grouped like the spot axis, see
+        :func:`~eqd_desk.app.ui.charts.level_text`), ``"+5pt"``, ``"12d"`` (React's)."""
         match self.key:
             case "vol":
                 return f"{'+' if x_plot >= 0 else ''}{to_fixed(x_plot, 0)}pt"
             case "time":
                 return f"{js_round(x_plot)}d"
             case "S":
-                return to_fixed(x_plot, 0)
+                return level_text(x_plot)
 
 
 def build_axis_meta(
@@ -272,7 +273,7 @@ __all__ = [
     "SPOT_HI",
     "SPOT_LO",
     "VOL_SHIFT",
-    "X_AXIS_OPTIONS",
+    "X_AXIS_CHOICES",
     "AxisMeta",
     "StrategyXAxis",
     "break_evens",

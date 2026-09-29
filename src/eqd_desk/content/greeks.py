@@ -416,3 +416,30 @@ PAYOFF_CAPTION: Final = (
 SURFACE_VOL_HINT: Final = "Set σ to the seed vol surface at this strike & tenor (shows the skew)"
 """Hint for the "σ ← surface" action, which snaps σ to the seed skew at the current
 strike/tenor (so the skew is something you can feel, not just read about)."""
+
+# web/src/components/InputPanel.tsx:157
+RESET_HINT: Final = "Restore the seed snapshot inputs"
+"""Hint for the "Reset to snapshot" action: spot, strike, tenor, vol, r and q back to the
+seed market snapshot."""
+
+
+__all__ = [
+    "GREEK_DOCS",
+    "GREEK_DOC_FIELD_LABELS",
+    "GREEK_GROUPS",
+    "GREEK_KEYS",
+    "GREEK_SWEEP_CAPTION_SUFFIXES",
+    "KEY_RELATIONSHIPS",
+    "PAYOFF_CAPTION",
+    "PLOTTABLE_KEYS",
+    "RESET_HINT",
+    "SURFACE_VOL_HINT",
+    "GreekDoc",
+    "GreekDocField",
+    "GreekGroup",
+    "GreekKey",
+    "GreekOrder",
+    "Relationship",
+    "XAxisKey",
+    "greek_sweep_caption",
+]

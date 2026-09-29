@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import pytest
 
+from eqd_desk.app.ui.format import js_number
 from eqd_desk.app.ui.sim_session import (
     COSTS,
     DEFAULT_WINDOW_LEN,
@@ -33,7 +34,6 @@ from eqd_desk.app.ui.sim_session import (
     fill_message,
     initial_state,
     joint_orders,
-    js_number,
     miss_message,
     order_fair,
     plan_quantity,
@@ -41,10 +41,12 @@ from eqd_desk.app.ui.sim_session import (
     structure_orders,
     ticket_from_plan,
     ticket_preview,
+    ticket_priceable,
 )
+from eqd_desk.app.ui.strategy_builder_state import WING_MAX_PCT
 from eqd_desk.content.simulator import FILL_MESSAGE_TEMPLATE, MISS_MESSAGE_TEMPLATE
 from eqd_desk.data import load_history, load_snapshot
-from eqd_desk.engine.presets import PresetParams, build_preset
+from eqd_desk.engine.presets import PRESETS, PresetParams, build_preset
 from eqd_desk.engine.rng import Mulberry32, NormalSampler
 from eqd_desk.engine.sim import (
     DEFAULT_SIM_PARAMS,
@@ -54,6 +56,7 @@ from eqd_desk.engine.sim import (
     book_greeks,
     book_greeks_raw,
     book_value,
+    empty_book,
     evaluate_quote,
     gbm_leverage_process,
     generate_rfq,
@@ -553,3 +556,67 @@ def test_cum_attribution_total_and_order() -> None:
     assert list(cum.as_dict()) == ["delta", "gamma", "theta", "vega", "vanna", "volga", "residual"]
     assert cum.total == 28
     assert math.isclose(CumAttribution().total, 0.0)
+
+
+# ------------------------------------------------------------------ robustness
+
+
+def test_selecting_an_rfq_that_is_gone_changes_nothing() -> None:
+    """A click on a chip that was quoted, passed or expired while the page redrew (its
+    button is still on screen) must not leave the quote box empty with RFQs live."""
+    desk = fresh()
+    first = desk.request_rfq()
+    second = desk.request_rfq()
+    assert first is not None
+    assert second is not None
+    desk.quote(0.05, 0.0)  # quotes the first; the second is selected
+    assert desk.state.selected == second
+    desk.select_rfq(first.id)  # the stale chip
+    assert desk.state.selected_id == second.id
+    assert desk.state.selected == second
+
+
+def test_a_request_replaces_a_dangling_selection() -> None:
+    """React keeps any selected id when a new RFQ comes in; an id whose RFQ is gone counts
+    as no selection here, so the new RFQ gets the quote box."""
+    desk = fresh()
+    first = desk.request_rfq()
+    assert first is not None
+    desk.state = replace(desk.state, queue=(), selected_id=first.id)  # dangling
+    rfq = desk.request_rfq()
+    assert rfq is not None
+    assert desk.state.selected == rfq
+    # a live selection is kept
+    other = desk.request_rfq()
+    assert other is not None
+    assert desk.state.selected == rfq
+
+
+def test_every_preset_is_priceable_up_to_the_wing_cap() -> None:
+    """The ticket's Wing % is capped at the strategy builder's WING_MAX_PCT: every preset
+    prices at every wing up to it (the seed spot)."""
+    m = CFG.initial_market
+    for preset in PRESETS:
+        for wing in range(1, WING_MAX_PCT + 1):
+            tk = replace(default_ticket(CFG), kind="structure", preset=preset.name)
+            tk = replace(tk, width_pct=wing / 100)
+            assert ticket_priceable(tk, m, CFG.strike_step), (preset.name, wing)
+            assert math.isfinite(ticket_preview(tk, m, CFG.strike_step).value)
+
+
+def test_a_structure_with_a_strike_at_zero_is_refused_not_crashed() -> None:
+    """An iron condor's outer put is at atm − 2·wing: 0 at a 50% wing (6300 − 2·3150), where
+    the engine's log(K/F) has no value. The ticket refuses it instead of crashing."""
+    desk = fresh()
+    m = desk.state.market
+    tk = replace(default_ticket(CFG), kind="structure", preset="iron-condor", width_pct=0.5)
+    assert min(o.K for o in structure_orders(tk, m, CFG.strike_step)) <= 0
+    assert not ticket_priceable(tk, m, CFG.strike_step)
+    with pytest.raises(ValueError, match="strike at or below zero"):
+        ticket_preview(tk, m, CFG.strike_step)
+    assert desk.execute_ticket(tk) is False
+    assert desk.state.book == empty_book()
+    assert desk.execute_ticket(replace(tk, width_pct=0.45)) is True
+    assert len(desk.state.book.trades) == 4
+    assert ticket_priceable(replace(tk, kind="option", K=0.0), m, 25) is False
+    assert ticket_priceable(replace(tk, kind="future"), m, 25) is True

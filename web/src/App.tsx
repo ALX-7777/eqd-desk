@@ -26,7 +26,7 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark">◤</span>
           <div>
-            <div className="brand-title">EQD Greeks Lab</div>
+            <div className="brand-title">EQD Desk</div>
             <div className="brand-sub dim">
               {snapshot.name} · BSM with dividend yield
             </div>

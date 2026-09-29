@@ -171,6 +171,7 @@ TSX_PROSE: list[tuple[str, tuple[str, ...]]] = [
     *[("PositionReadout.tsx", (_group(g),)) for g in greeks.GREEK_GROUPS],
     ("PlotsPanel.tsx", (f"'{greeks.GREEK_SWEEP_CAPTION_SUFFIXES['S']}'",)),
     ("InputPanel.tsx", (f'title="{greeks.SURFACE_VOL_HINT}"',)),
+    ("InputPanel.tsx", (f'title="{greeks.RESET_HINT}"',)),
     # strategy builder
     (
         "StrategyEducation.tsx",

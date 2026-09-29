@@ -111,3 +111,31 @@ TONE_MARKDOWN: Final[Mapping[Tone, str]] = MappingProxyType(
 )
 """Streamlit Markdown colour name of every tone (``:green[…]``); the theme maps each name to
 the same hex as :data:`TONE_COLORS`."""
+
+
+__all__ = [
+    "ACCENT",
+    "ACCENT_DIM",
+    "AXIS",
+    "BG",
+    "BORDER",
+    "CALL",
+    "GRID",
+    "LINE",
+    "MONO_FONT",
+    "NEG",
+    "PANEL",
+    "PANEL_2",
+    "PANEL_HI",
+    "POS",
+    "PUT",
+    "SANS_FONT",
+    "SERIES_COLORS",
+    "TEXT",
+    "TEXT_DIM",
+    "TONE_COLORS",
+    "TONE_MARKDOWN",
+    "VIOLET",
+    "YELLOW",
+    "Tone",
+]

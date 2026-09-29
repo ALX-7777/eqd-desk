@@ -6,6 +6,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from eqd_desk.app.ui.format import fmt_level, fmt_num, fmt_pct
+from eqd_desk.app.ui.home_text import BSM_LATEX, note_markdown, skew_source, structure_ideas
 from eqd_desk.app.ui.nav import PAGES, TOOLS, PageSpec
 from eqd_desk.app.ui.state import APP_READY_KEY
 from eqd_desk.app.ui.widgets import header_stats, seed_badge_text
@@ -71,7 +72,45 @@ def test_home_seed_market_metrics_show_snapshot_values(app: AppTest) -> None:
     )
     captions = [c.value for c in app.caption]
     for note in snap.source_notes:
-        assert markdown_safe(note) in captions
+        assert note_markdown(note) in captions
+    # the refresh command renders as inline code, not as escaped (literal) backticks
+    assert any("`uv run --group scripts python scripts/fetch_snapshot.py" in c for c in captions)
+    assert not any("\\`" in c for c in captions)
+
+
+def test_home_labels_the_skew_shape_by_its_source(app: AppTest) -> None:
+    """The committed seed's skew is the parametric fallback (its own note says so): the
+    smile title and the provenance table say that, never "SPY shape"/"SPY option chain"."""
+    snap = load_snapshot()
+    src = skew_source(snap.source_notes, snap.tickers.options_proxy)
+    assert not src.fitted
+    texts = markdown_texts(app)
+    assert any("Implied-vol smile" in t and src.tag in t for t in texts)
+    assert not any("SPY shape" in t for t in texts)
+    provenance = next(t.value for t in app.table if "Skew shape" in t.value.index)
+    assert provenance.loc["Skew shape"].iloc[0] == src.detail
+
+
+def test_home_tool_cards_each_list_key_ideas(app: AppTest) -> None:
+    """Every card, Strategy builder included, lists four key ideas, so the cards read
+    evenly (the "Open …" links are pinned to the card bottoms by the layout)."""
+    lists = [t for t in markdown_texts(app) if t.startswith("- ") and "**" not in t]
+    assert len(lists) == len(TOOLS)
+    assert all(len(t.splitlines()) == 4 for t in lists)
+    assert "\n".join(f"- {markdown_safe(i)}" for i in structure_ideas()) in lists
+
+
+def test_home_describes_how_exotics_are_priced(app: AppTest) -> None:
+    how = next(t for t in markdown_texts(app) if "**Exotics**" in t)
+    assert "variance swap" in how
+    assert "closed forms where they exist" not in how  # the var swap is a strip, not a formula
+    assert "1/K²" in how
+    assert "central-difference bumps" in how
+
+
+def test_home_bsm_formulas_one_per_row(app: AppTest) -> None:
+    (formulas,) = app.latex
+    assert BSM_LATEX in formulas.value
 
 
 def test_home_units_table_lists_every_greek(app: AppTest) -> None:

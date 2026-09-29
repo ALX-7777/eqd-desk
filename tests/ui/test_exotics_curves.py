@@ -10,9 +10,10 @@ from dataclasses import replace
 import pytest
 
 from eqd_desk.app.ui import exotics_curves as ec
+from eqd_desk.app.ui.bounds import Bounds, listed_strike_step
 from eqd_desk.app.ui.charts import sweep_x
 from eqd_desk.app.ui.format import fmt_money, fmt_num, fmt_pct, fmt_signed_pct
-from eqd_desk.content import ExoticMetric
+from eqd_desk.content import EXOTIC_METRICS, ExoticKind, ExoticMetric
 from eqd_desk.data import MarketSnapshot, load_snapshot
 from eqd_desk.engine import BsmInputs, OptionType, analyze_option
 from eqd_desk.engine.exotics import (
@@ -35,6 +36,7 @@ from eqd_desk.engine.exotics import (
     price_autocall,
     price_variance_swap,
 )
+from eqd_desk.engine.presets import round_to
 
 
 @pytest.fixture(scope="module")
@@ -61,12 +63,13 @@ def note(snap: MarketSnapshot) -> AutocallInputs:
 
 
 def test_strike_grid_follows_react_rounding() -> None:
-    assert ec.listed_step(6312.45) == 25.0
-    assert ec.listed_step(500.0) == 5.0
-    assert ec.to_grid(6312.45, 25) == 6300.0
-    assert ec.to_grid(5681.205, 25) == 5675.0
-    assert ec.to_grid(12.5, 25) == 25.0  # Math.round ties toward +inf
-    assert ec.to_grid(-12.5, 25) == 0.0
+    # the seeds use the shared listed grid and the engine's JS-exact rounding
+    assert listed_strike_step(6312.45) == 25.0
+    assert listed_strike_step(500.0) == 5.0
+    assert round_to(6312.45, 25) == 6300.0
+    assert round_to(5681.205, 25) == 5675.0
+    assert round_to(12.5, 25) == 25.0  # Math.round ties toward +inf
+    assert round_to(-12.5, 25) == 0.0
 
 
 def test_seeds_are_the_react_defaults(snap: MarketSnapshot) -> None:
@@ -90,21 +93,21 @@ def test_seeds_are_the_react_defaults(snap: MarketSnapshot) -> None:
 
 def test_slider_bounds_are_the_react_bounds(snap: MarketSnapshot) -> None:
     b = ec.barrier_bounds(snap.spot)
-    assert b["S"] == b["K"] == ec.Bounds(3775, 8825, 5)
-    assert b["H"] == ec.Bounds(3150, 9475, 5)
-    assert b["T"] == ec.Bounds(0.02, 2, 0.01)
-    assert b["sigma"] == ec.Bounds(0.05, 0.8, 0.0025)
+    assert b["S"] == b["K"] == Bounds(3775, 8825, 5)
+    assert b["H"] == Bounds(3150, 9475, 5)
+    assert b["T"] == Bounds(0.02, 2, 0.01)
+    assert b["sigma"] == Bounds(0.05, 0.8, 0.0025)
     d = ec.digital_bounds(snap.spot)
-    assert d["T"] == ec.Bounds(0.005, 1.5, 0.005)
-    assert d["cash"] == ec.Bounds(10, 500, 10)
-    assert d["width"] == ec.Bounds(5, 625, 5)
+    assert d["T"] == Bounds(0.005, 1.5, 0.005)
+    assert d["cash"] == Bounds(10, 500, 10)
+    assert d["width"] == Bounds(5, 625, 5)
     a = ec.autocall_bounds(snap.spot)
-    assert a["S"] == ec.Bounds(2525, 9469, snap.spot / 200)
-    assert a["n_obs"] == ec.Bounds(1, 24, 1)
-    assert a["protection_barrier"] == ec.Bounds(0.3, 1, 0.01)
+    assert a["S"] == Bounds(2525, 9469, snap.spot / 200)
+    assert a["n_obs"] == Bounds(1, 24, 1)
+    assert a["protection_barrier"] == Bounds(0.3, 1, 0.01)
     v = ec.varswap_bounds()
-    assert v["T"] == ec.Bounds(7 / 365, 1, 1 / 365)
-    assert v["slope"] == ec.Bounds(-1.2, 0.2, 0.01)
+    assert v["T"] == Bounds(7 / 365, 1, 1 / 365)
+    assert v["slope"] == Bounds(-1.2, 0.2, 0.01)
     for bounds in (*b.values(), *d.values(), *a.values(), *v.values()):
         assert bounds.lo < bounds.hi
         assert bounds.step > 0
@@ -172,10 +175,10 @@ def test_autocall_default_readout_is_the_react_one(note: AutocallInputs) -> None
 
 def test_varswap_default_readout_is_the_react_one(snap: MarketSnapshot) -> None:
     data = ec.varswap_data(ec.varswap_seed(snap), S=snap.spot, r=snap.r, q=snap.q)
-    assert fmt_pct(data.fair_vol) == "17.24%"
-    assert fmt_num(data.fair_variance, 5) == "0.029733"
+    assert fmt_pct(data.fair_vol) == "17.16%"
+    assert fmt_num(data.fair_variance, 5) == "0.029432"
     assert fmt_pct(data.atm_vol) == "14.60%"
-    assert fmt_signed_pct(data.convexity_premium) == "+2.64%"
+    assert fmt_signed_pct(data.convexity_premium) == "+2.56%"
     assert fmt_money(data.forward) == "6,328.03"
 
 
@@ -233,6 +236,98 @@ def test_barrier_complement_is_an_involution() -> None:
     assert list(ec.BARRIER_KIND_LABELS) == ["down-out", "down-in", "up-out", "up-in"]
 
 
+def test_direction_and_knock_compose_every_barrier_kind() -> None:
+    """The kind is picked as a direction and a knock: the two segment pairs reach every
+    engine kind, and back."""
+    assert list(ec.BARRIER_DIRECTION_LABELS.values()) == ["Down", "Up"]
+    assert list(ec.BARRIER_KNOCK_LABELS.values()) == ["Out", "In"]
+    composed = {
+        ec.barrier_kind(d, k) for d in ec.BARRIER_DIRECTION_LABELS for k in ec.BARRIER_KNOCK_LABELS
+    }
+    assert composed == set(BARRIER_KINDS) == set(ec.BARRIER_KIND_LABELS)
+    for kind in BARRIER_KINDS:
+        direction, knock = ec.barrier_sides(kind)
+        assert ec.barrier_kind(direction, knock) == kind
+        assert ec.BARRIER_KIND_LABELS[kind] == f"{ec.BARRIER_DIRECTION_LABELS[direction]}-{knock}"
+    assert ec.barrier_sides("down-out") == ("down", "out")
+    assert ec.barrier_sides("up-in") == ("up", "in")
+
+
+@pytest.mark.parametrize("kind", BARRIER_KINDS)
+@pytest.mark.parametrize("option", ["call", "put"])
+def test_barrier_status_matches_the_engine(
+    barrier: BarrierInputs, kind: BarrierKind, option: OptionType
+) -> None:
+    """Breached / struck beyond ⇔ the engine prices the knock-out at exactly 0 and the
+    knock-in at the vanilla."""
+    direction, knock = ec.barrier_sides(kind)
+    out_kind = kind if knock == "out" else ec.BARRIER_COMPLEMENT[kind]
+    in_kind = ec.BARRIER_COMPLEMENT[out_kind]
+    grid = [4500.0, 5675.0, 6000.0, 6312.45, 6600.0, 7025.0, 8000.0]
+    for H in grid:
+        for K in (5500.0, 6300.0, 7200.0):
+            i = replace(barrier, type=option, kind=kind, H=H, K=K)
+            status = ec.barrier_status(i)
+            breached = ec.barrier_breached(i.S, H, direction)
+            assert (status == "breached") == breached
+            knock_out = barrier_price(replace(i, kind=out_kind))
+            knock_in = barrier_price(replace(i, kind=in_kind))
+            vanilla = analyze_option(ec.vanilla_inputs(i), option).reported.price
+            dead = status != "live"
+            assert (knock_out == 0.0) == dead, (H, K, status, knock_out)
+            if dead:
+                assert knock_in == pytest.approx(vanilla, rel=1e-9)
+
+
+def test_barrier_breached_is_the_engine_test() -> None:
+    assert ec.barrier_breached(6312.45, 6312.45, "down")  # touching counts
+    assert ec.barrier_breached(6312.45, 6312.45, "up")
+    assert ec.barrier_breached(6312.45, 7025.0, "down")
+    assert not ec.barrier_breached(6312.45, 5675.0, "down")
+    assert ec.barrier_breached(6312.45, 5675.0, "up")
+    assert not ec.barrier_breached(6312.45, 7025.0, "up")
+
+
+def test_switching_side_mirrors_the_barrier_through_spot(snap: MarketSnapshot) -> None:
+    b = ec.barrier_bounds(snap.spot)["H"]
+    step = listed_strike_step(snap.spot)
+    S = snap.spot
+    # the seed's down barrier, 10% below, flips to ~the same log-distance above, and back
+    up = ec.reflected_barrier(S, 5675.0, "up", b, step)
+    assert up == 7025.0
+    assert up == round_to(S * S / 5675.0, step)
+    assert ec.reflected_barrier(S, up, "down", b, step) == 5675.0
+    # already on the right side: untouched (a breached down barrier switched to up is valid)
+    assert ec.reflected_barrier(S, 7025.0, "up", b, step) == 7025.0
+    assert ec.reflected_barrier(S, 5675.0, "down", b, step) == 5675.0
+    assert ec.reflected_barrier(S, 6600.0, "up", b, step) == 6600.0
+    # a barrier AT spot moves to the next grid level beyond it
+    assert ec.reflected_barrier(6300.0, 6300.0, "up", b, step) == 6325.0
+    assert ec.reflected_barrier(6300.0, 6300.0, "down", b, step) == 6275.0
+    # far away: clamped to the slider, still beyond spot
+    lo_spot = ec.barrier_bounds(snap.spot)["S"].lo
+    far = ec.reflected_barrier(lo_spot, b.hi, "down", b, step)
+    assert far == b.lo < lo_spot
+    directions: tuple[ec.BarrierDirection, ...] = ("down", "up")
+    for S_ in sweep_x(lo_spot, ec.barrier_bounds(snap.spot)["S"].hi, 40):
+        for H in sweep_x(b.lo, b.hi, 40):
+            for direction in directions:
+                h = ec.reflected_barrier(S_, H, direction, b, step)
+                assert b.lo <= h <= b.hi
+                assert not ec.barrier_breached(S_, h, direction)
+
+
+def test_metric_chips_offer_only_what_each_view_reports() -> None:
+    assert ec.METRIC_CHIPS["barrier"] == ec.METRIC_CHIPS["digital"] == EXOTIC_METRICS
+    assert ec.METRIC_CHIPS["autocall"] == ("price", "delta", "vega", "theta", "rho")
+    assert "gamma" not in ec.METRIC_CHIPS["autocall"]  # MC gamma is not reported
+    assert set(ec.METRIC_CHIPS["autocall"]) == {"price", *ec.AUTOCALL_READOUT_KEYS}
+    assert ec.METRIC_CHIPS["varswap"] == ()
+    priced: tuple[ExoticKind, ...] = ("barrier", "digital", "autocall")
+    for kind in priced:
+        assert ec.DEFAULT_METRIC[kind] in ec.METRIC_CHIPS[kind]
+
+
 def test_pct_of_vanilla_rounds_like_react() -> None:
     assert ec.pct_of_vanilla(306.96, 312.24) == 98
     assert ec.pct_of_vanilla(1.0, 0.0) == 0
@@ -275,7 +370,11 @@ def test_the_call_spread_converges_to_the_digital(snap: MarketSnapshot) -> None:
 
 def test_cash_payout_is_the_react_digital(snap: MarketSnapshot, digital: DigitalInputs) -> None:
     """The payout defaults to cash, and cash is exactly the React (engine) digital."""
-    assert list(ec.DIGITAL_PAYOUT_LABELS) == ["cash", "asset"]
+    assert list(ec.DIGITAL_PAYOUT_LABELS) == list(ec.DIGITAL_PAYOUT_NAMES) == ["cash", "asset"]
+    # short segments (they sit side by side in the narrow controls column), full names in
+    # the legend and the tooltip
+    assert list(ec.DIGITAL_PAYOUT_LABELS.values()) == ["Cash", "Asset"]
+    assert list(ec.DIGITAL_PAYOUT_NAMES.values()) == ["Cash-or-nothing", "Asset-or-nothing"]
     assert ec.digital_price(digital) == cash_or_nothing_price(digital)
     assert ec.payout_greeks(digital) == digital_greeks(digital)
     assert ec.replication_price(digital, 125.0) == call_spread_replication(digital, 125.0)
@@ -502,11 +601,10 @@ def test_truncating_the_strip_loses_variance(snap: MarketSnapshot) -> None:
 
 
 def test_display_helpers() -> None:
-    assert ec.js_number(3.0) == "3"
-    assert ec.js_number(0.25) == "0.25"
+    assert ec.maturity_display(3.0) == "3 y"
+    assert ec.maturity_display(2.5) == "2.5 y"
     assert ec.years_display(0.5) == "0.50 y"
-    assert ec.metric_axis_title("Price", "premium", "USD", "price") == "Value (USD)"
-    assert ec.metric_axis_title("Gamma", "Δdelta per $1 spot", "USD", "gamma") == (
-        "Gamma (Δdelta per $1 spot)"
-    )
+    assert ec.metric_axis_title("price", "USD") == "Value (USD)"
+    assert ec.metric_axis_title("gamma", "USD") == "Gamma (Δdelta per $1 spot)"
+    assert ec.metric_axis_title("delta", "EUR") == "Delta (per €1 spot)"
     assert ec.metric_value(barrier_greeks(ec.barrier_seed(load_snapshot())), "rho") > 0

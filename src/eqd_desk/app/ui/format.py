@@ -131,6 +131,25 @@ def js_round(x: float) -> int:
     return f + 1 if x - f >= 0.5 else f
 
 
+def js_number(x: float) -> str:
+    """JavaScript ``String(x)`` (what a template literal prints for a number): integers
+    without a decimal point (``3``, ``100``), other values with the shortest digits that
+    round-trip (``2.5``, ``0.1``), fixed notation from 1e-6 up to 1e21 and exponential
+    beyond (``1e-7``, ``1.5e+21``); ``-0`` prints ``0``, non-finite values ``NaN`` /
+    ``Infinity`` / ``-Infinity``."""
+    if math.isnan(x):
+        return "NaN"
+    if math.isinf(x):
+        return "Infinity" if x > 0 else "-Infinity"
+    if x == 0:
+        return "0"
+    if 1e-6 <= abs(x) < 1e21:
+        text = format(Decimal(repr(x)), "f")
+        return text.rstrip("0").rstrip(".") if "." in text else text
+    mantissa, _, exponent = repr(x).partition("e")
+    return f"{mantissa.removesuffix('.0')}e{int(exponent):+d}"
+
+
 # ------------------------------------------------------------------ format.ts
 
 
@@ -237,3 +256,45 @@ def fmt_years_days(t_years: float, dp: int = 3) -> str:
 def fmt_with_unit(text: str, unit: str | None) -> str:
     """Append a unit after a thin separator (``"6,312.45 USD"``); no unit → text unchanged."""
     return f"{text} {unit}" if unit else text
+
+
+# ------------------------------------------------------------------ slider thumbs
+# Streamlit ``format`` strings for a slider's thumb label (a printf string or a preset), so a
+# thumb reads in the units of the value printed above it.
+
+THUMB_PERCENT: Final = "percent"
+"""A decimal shown as a percentage (0.146 → ``14.6%``): vols, rates, yields, barriers and
+coupons, like the header's ``14.60%``."""
+
+THUMB_LEVEL: Final = "%,.2f"
+"""An index level or an amount, grouped (``6,312.45``), like the header's ``6,312.45 USD``."""
+
+THUMB_YEARS: Final = "%.3f y"
+"""A time to expiry in years (``0.082 y``), like the header's ``0.082 y · 30 d``."""
+
+
+__all__ = [
+    "EM_DASH",
+    "MINUS",
+    "THUMB_LEVEL",
+    "THUMB_PERCENT",
+    "THUMB_YEARS",
+    "SignClass",
+    "fmt_days",
+    "fmt_level",
+    "fmt_money",
+    "fmt_num",
+    "fmt_pct",
+    "fmt_signed",
+    "fmt_signed_money",
+    "fmt_signed_pct",
+    "fmt_with_unit",
+    "fmt_years_days",
+    "js_number",
+    "js_round",
+    "sign_class",
+    "to_exponential",
+    "to_fixed",
+    "to_locale",
+    "to_precision",
+]

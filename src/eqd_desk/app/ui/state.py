@@ -18,7 +18,7 @@ navigates away and back (the React simulator stays mounted for the same reason).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from typing import Final, cast
 
 import streamlit as st
@@ -66,24 +66,6 @@ def underlying(snap: MarketSnapshot | None = None) -> UnderlyingConfig:
     return UNDERLYINGS[DEFAULT_UNDERLYING]
 
 
-def strike_step(spot: float | None = None) -> float:
-    """Listed-strike grid of the index, in index points: 25 for an index above 2,000
-    (SPX, SX5E), else 5 — the React exotics' and simulator's ``STRIKE_STEP``."""
-    s = snapshot().spot if spot is None else spot
-    return 25.0 if s >= 2000 else 5.0
-
-
-def level_step(spot: float | None = None) -> float:
-    """Slider increment for spot / strike inputs: 1 point above 2,000, 0.5 above 200, else
-    0.1 — the greeks lab's ``stepFor(spot)``."""
-    s = snapshot().spot if spot is None else spot
-    if s >= 2000:
-        return 1.0
-    if s >= 200:
-        return 0.5
-    return 0.1
-
-
 # ------------------------------------------------------------------ session state
 
 
@@ -106,22 +88,6 @@ def ensure_lazy[T](key: str, factory: Callable[[], T]) -> T:
     return cast("T", st.session_state[key])
 
 
-def reset_state(values: Mapping[str, object]) -> None:
-    """Overwrite keys (e.g. a "Reset" button's ``on_click``). Widget keys may only be
-    assigned before their widget renders in a run, so call this from a callback."""
-    for key, value in values.items():
-        st.session_state[key] = value
-
-
-def clear_state(prefix: str, *, keep: Iterable[str] = ()) -> None:
-    """Delete every session key starting with ``prefix`` (``"lab."``) except ``keep``;
-    the page's :func:`ensure_state` then re-seeds its defaults on the next run."""
-    kept = set(keep)
-    for key in [k for k in st.session_state if str(k).startswith(prefix)]:
-        if key not in kept:
-            del st.session_state[key]
-
-
 def init_app_state() -> None:
     """App-wide, idempotent initialisation run by the entrypoint before every page: loads
     (and so caches) the shared market data once, then marks the session ready."""
@@ -131,3 +97,15 @@ def init_app_state() -> None:
     surface()
     history()
     st.session_state[APP_READY_KEY] = True
+
+
+__all__ = [
+    "APP_READY_KEY",
+    "ensure_lazy",
+    "ensure_state",
+    "history",
+    "init_app_state",
+    "snapshot",
+    "surface",
+    "underlying",
+]

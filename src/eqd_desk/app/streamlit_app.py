@@ -1,8 +1,9 @@
 """EQD Desk: the Streamlit entrypoint (``eqd-desk`` / ``streamlit run`` this file).
 
-Runs before every page: page config, the idempotent app-wide state init, the header strip
-(brand + seed market) and the top navigation. The pages themselves live in ``app_pages/``
-and are registered once in :mod:`eqd_desk.app.ui.nav`.
+Runs before every page: page config (the browser tab names the page: "Greeks lab · EQD
+Desk"), the idempotent app-wide state init, the header strip (brand + seed market) and the
+top navigation. The pages themselves live in ``app_pages/`` and are registered once in
+:mod:`eqd_desk.app.ui.nav`.
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ if find_spec("eqd_desk") is None:  # pragma: no cover - depends on the hosting e
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from eqd_desk.app.ui import state
-from eqd_desk.app.ui.nav import PAGES
-from eqd_desk.app.ui.widgets import APP_ICON, APP_NAME, app_header
+from eqd_desk.app.ui.nav import APP_ICON, APP_NAME, PAGES, page_spec
+from eqd_desk.app.ui.widgets import app_header
 
 st.set_page_config(page_title=APP_NAME, page_icon=APP_ICON, layout="wide")
 
@@ -40,6 +41,8 @@ page = st.navigation(
     ],
     position="top",
 )
+# Additive: only the tab title changes, to the page's own (the call above sets the defaults).
+st.set_page_config(page_title=page_spec(page.title).tab_title)
 
 snap = state.snapshot()
 app_header(snap, state.underlying(snap))

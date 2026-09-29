@@ -15,7 +15,7 @@ from eqd_desk.app.ui.strategy_builder_legs import make_preset
 from eqd_desk.app.ui.strategy_curves import (
     FRONT_EXPIRY_GAP,
     N_POINTS,
-    X_AXIS_OPTIONS,
+    X_AXIS_CHOICES,
     StrategyXAxis,
     break_evens,
     build_axis_meta,
@@ -150,8 +150,8 @@ def test_spot_axis_meta() -> None:
     assert (meta.label, meta.lo, meta.hi, meta.current) == ("Spot", SPOT * 0.7, SPOT * 1.3, 6100.0)
     assert meta.plot_scale == 1.0
     assert sweep_heading(meta) == "spot"
-    assert meta.tick(6312.45) == "6312"
-    assert meta.tick(6312.5) == "6313"  # toFixed rounds the binary value half away from 0
+    assert meta.tick(6312.45) == "6,312"  # grouped like the spot axis
+    assert meta.tick(6312.5) == "6,313"  # halves round away from 0, as toFixed
 
 
 def test_vol_axis_meta() -> None:
@@ -177,7 +177,7 @@ def test_time_axis_meta() -> None:
 
 
 def test_axis_options_are_react_labels() -> None:
-    assert dict(X_AXIS_OPTIONS) == {"S": "Spot", "vol": "Vol", "time": "Time"}
+    assert dict(X_AXIS_CHOICES) == {"S": "Spot", "vol": "Vol", "time": "Time"}
 
 
 # ------------------------------------------------------------------ greek at x

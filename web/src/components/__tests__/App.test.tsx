@@ -5,7 +5,7 @@ import App from '../../App'
 describe('App (Greeks Lab) smoke test', () => {
   it('renders the shell, market strip, price and greeks without crashing', () => {
     render(<App />)
-    expect(screen.getByText('EQD Greeks Lab')).toBeInTheDocument()
+    expect(screen.getByText('EQD Desk')).toBeInTheDocument()
     expect(screen.getByText('Price & Greeks')).toBeInTheDocument()
     // every greek label shows up at least once (readout or chips)
     for (const label of ['Delta', 'Gamma', 'Vega', 'Theta', 'Vanna', 'Volga', 'Charm', 'Color']) {

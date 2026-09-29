@@ -1,7 +1,8 @@
-"""Pure helpers of the simulator's steady inputs (:mod:`eqd_desk.app.ui.simulator_inputs`).
+"""Pure helpers of the remount-safe inputs (:mod:`eqd_desk.app.ui.inputs`).
 
-Their Streamlit behaviour (explicit defaults, remount on ``set_value``, user edits synced to
-the canonical key) is covered by ``tests/app/test_simulator.py``.
+Their Streamlit behaviour (explicit defaults, remount on ``set_value`` or on a plain write of
+the canonical key, user edits synced to the canonical key) is covered by
+``tests/app/test_widgets_app.py`` and ``tests/app/test_simulator.py``.
 """
 
 from __future__ import annotations
@@ -10,12 +11,14 @@ import math
 
 import pytest
 
-from eqd_desk.app.ui.simulator_inputs import (
+from eqd_desk.app.ui.inputs import (
     GEN_SUFFIX,
     WIDGET_SUFFIX,
     clamp_number,
     gen_key,
+    generation_in,
     widget_key,
+    widget_key_in,
 )
 
 
@@ -30,6 +33,15 @@ def test_each_generation_is_a_distinct_widget() -> None:
     assert len(keys) == 5
     assert "sim.spread" not in keys  # the canonical key is never a widget key
     assert gen_key("sim.spread") not in keys
+
+
+def test_the_current_widget_key_is_read_from_any_state_mapping() -> None:
+    state: dict[str, object] = {"lab.greek": "gamma"}
+    assert generation_in(state, "lab.greek") == 0  # no programmatic change yet
+    assert widget_key_in(state, "lab.greek") == "lab.greek__w0"
+    state[gen_key("lab.greek")] = 2
+    assert generation_in(state, "lab.greek") == 2
+    assert widget_key_in(state, "lab.greek") == "lab.greek__w2"
 
 
 @pytest.mark.parametrize(

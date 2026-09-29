@@ -11,6 +11,7 @@ import pytest
 
 from eqd_desk.app.ui import charts
 from eqd_desk.app.ui import greeks_lab_curves as curves
+from eqd_desk.app.ui import greeks_lab_inputs as lab_inputs
 from eqd_desk.app.ui.format import fmt_money, fmt_num, to_precision
 from eqd_desk.content import GREEK_KEYS
 from eqd_desk.content.greeks import GREEK_GROUPS, XAxisKey
@@ -31,15 +32,34 @@ TYPES: tuple[OptionType, ...] = ("call", "put")
     ("x_axis", "lo", "hi"),
     [
         ("S", SNAP.spot * 0.6, SNAP.spot * 1.4),
-        ("sigma", 0.02, 0.8),
+        # React sweeps 0.02 … 0.80; here the σ input's own range (see the next test)
+        ("sigma", 0.02, 1.0),
         ("T", 0.003, 2.0),
     ],
 )
-def test_sweep_ranges_are_the_react_ones(x_axis: XAxisKey, lo: float, hi: float) -> None:
+def test_sweep_ranges(x_axis: XAxisKey, lo: float, hi: float) -> None:
     assert curves.x_range(x_axis, SNAP.spot) == (lo, hi)
     frame = curves.greek_sweep(SEED, "call", x_axis, SNAP.spot)
     assert list(frame["x"]) == charts.sweep_x(lo, hi, 100)  # N = 100 → 101 points
     assert list(frame.columns) == ["x", *GREEK_KEYS]
+
+
+@pytest.mark.parametrize("field", ["sigma", "T"])
+def test_vol_and_time_sweeps_span_their_input_so_the_current_marker_is_always_drawn(
+    field: XAxisKey,
+) -> None:
+    # regression: σ could be set to 100 % while the vol sweep stopped at 80 %, and the
+    # "dashed: current vol" marker fell off the chart
+    spec = next(s for s in lab_inputs.input_specs(SNAP.spot, SNAP.currency) if s.field == field)
+    assert curves.x_range(field, SNAP.spot) == (spec.min_value, spec.max_value)
+    for value in (spec.min_value, spec.max_value):
+        lo, hi = curves.x_range(field, SNAP.spot)
+        assert lo <= curves.current_x(dataclasses.replace(SEED, **{field: value}), field) <= hi
+
+
+def test_sigma_bounds_are_one_definition() -> None:
+    assert curves.SIGMA_RANGE == (curves.SIGMA_BOUNDS.lo, curves.SIGMA_BOUNDS.hi) == (0.02, 1.0)
+    assert curves.SIGMA_BOUNDS.step == 0.0025
 
 
 @pytest.mark.parametrize("option_type", TYPES)
@@ -147,15 +167,16 @@ def test_raw_scale_text() -> None:
 @pytest.mark.parametrize(
     ("x_axis", "value", "text"),
     [
-        ("S", 6312.45, "6312"),
-        ("S", 3787.47, "3787"),
+        ("S", 6312.45, "6,312"),
+        ("S", 3787.47, "3,787"),
         ("sigma", 0.146, "15%"),
         ("sigma", 0.8, "80%"),
+        ("sigma", 1.0, "100%"),
         ("T", 30 / 365, "0.08"),
         ("T", 2.0, "2.00"),
     ],
 )
-def test_x_tick_is_the_react_tooltip_label(x_axis: XAxisKey, value: float, text: str) -> None:
+def test_x_tick_is_the_tooltip_label(x_axis: XAxisKey, value: float, text: str) -> None:
     assert curves.x_tick(x_axis, value) == text
 
 

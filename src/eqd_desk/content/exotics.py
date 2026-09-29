@@ -9,7 +9,10 @@ TypeScript, enforced by ``tests/parity/test_content_parity.py``).
 The constants after :data:`EXOTIC_DOCS` are teaching prose lifted out of the React markup
 (each carries its ``file:line``): the card headings, the sub-tab labels, the "how to read
 this" captions under each exotic's characteristic chart, and the notes beside the
-readout numbers.
+readout numbers. A few are Streamlit-UI additions for controls and notes the React views do
+not have (the barrier's direction / knock split and its "already knocked" notes, the
+asset-or-nothing payout, the autocallable's missing gamma, the variance swap's skew switch);
+each is marked as such.
 
 The chart captions name the React chart styling ("Blue", "Orange", "Red dashed", "dotted",
 "accent" …): a UI that shows them should draw the corresponding series in matching styles
@@ -191,6 +194,69 @@ BARRIER_CHART_CAPTION: Final = (
 )
 """Caption under the barrier's metric-vs-spot chart."""
 
+# Streamlit-UI addition (the React view picks one of four kinds; this UI splits the kind
+# into a direction and a knock, which also shows the in/out pairing).
+BARRIER_DIRECTION_HINT: Final = (
+    "Down: the barrier sits below spot. Up: it sits above spot. Switching side mirrors H to "
+    "about the same distance on the other side of spot, so the option does not start out "
+    "already knocked in or out."
+)
+"""Tooltip of the barrier's direction control (Down / Up)."""
+
+# Streamlit-UI addition (see BARRIER_DIRECTION_HINT).
+BARRIER_KNOCK_HINT: Final = (
+    "Out: the option dies the moment spot touches H. In: it only comes alive if spot "
+    "touches H. Same barrier, same strike: knock-in + knock-out = the vanilla."
+)
+"""Tooltip of the barrier's knock control (Out / In)."""
+
+# Streamlit-UI addition (no React counterpart: the React view shows the zero premium bare).
+BARRIER_BREACHED_NOTES: Final[Mapping[Literal["down-out", "down-in", "up-out", "up-in"], str]] = (
+    MappingProxyType(
+        {
+            "down-out": (
+                "Spot is at or below the barrier, so this down-and-out has already knocked "
+                "out: it is worth nothing and every greek is zero. Move H below spot to bring "
+                "it back to life."
+            ),
+            "down-in": (
+                "Spot is at or below the barrier, so this down-and-in has already knocked in: "
+                "it is simply the vanilla now. Move H below spot to see the barrier matter."
+            ),
+            "up-out": (
+                "Spot is at or above the barrier, so this up-and-out has already knocked out: "
+                "it is worth nothing and every greek is zero. Move H above spot to bring it "
+                "back to life."
+            ),
+            "up-in": (
+                "Spot is at or above the barrier, so this up-and-in has already knocked in: it "
+                "is simply the vanilla now. Move H above spot to see the barrier matter."
+            ),
+        }
+    )
+)
+"""Shown beside the barrier chart when spot is already at or beyond the barrier (the
+engine's breached case): why the knock-out reads zero, or the knock-in the vanilla."""
+
+# Streamlit-UI addition (no React counterpart).
+BARRIER_STRIKE_BEYOND_NOTES: Final[Mapping[Literal["out", "in"], str]] = MappingProxyType(
+    {
+        "out": (
+            "The strike is beyond the barrier: to finish in the money, spot must first cross "
+            "H, which kills the option. This knock-out can never pay, so it is worth nothing "
+            "and every greek is zero. Put K on spot's side of H."
+        ),
+        "in": (
+            "The strike is beyond the barrier: to finish in the money, spot must first cross "
+            "H, which switches the option on. This knock-in is the whole vanilla. Put K on "
+            "spot's side of H to see the barrier matter."
+        ),
+    }
+)
+"""Shown beside the barrier chart when the strike lies beyond the barrier (an up call
+struck at or above H, a down put struck at or below it): the knock-out is structurally
+worthless and the knock-in is the vanilla, by knock."""
+
 # web/src/components/exotics/DigitalView.tsx:157
 DIGITAL_PRICE_CAPTION: Final = (
     "Blue: the digital. Orange: the replicating call spread of width Δ — shrink Δ (or T) "
@@ -206,6 +272,31 @@ DIGITAL_GREEK_CAPTION: Final = (
 )
 """Caption under the digital's chart when a greek (not the price) is selected."""
 
+# Streamlit-UI addition (no React counterpart: the React digital is cash-or-nothing only).
+DIGITAL_PAYOUT_HINT: Final = (
+    "Cash-or-nothing pays a fixed amount Q if the option finishes in the money. "
+    "Asset-or-nothing pays the index itself, S_T."
+)
+"""Tooltip of the digital's payout control (Cash / Asset), naming both payouts in full."""
+
+# Streamlit-UI addition (no React counterpart: the React digital is cash-or-nothing only).
+DIGITAL_ASSET_PRICE_CAPTIONS: Final[Mapping[Literal["call", "put"], str]] = MappingProxyType(
+    {
+        "call": (
+            "Blue: asset-or-nothing. Orange: a vanilla call + (K/Δ) call spreads — AoN = "
+            "vanilla + K × cash digital, so it inherits the digital's pin risk, K times over."
+        ),
+        "put": (
+            "Blue: asset-or-nothing. Orange: (K/Δ) put spreads − a vanilla put — AoN = "
+            "K × cash digital − vanilla, so it inherits the digital's pin risk, K times over."
+        ),
+    }
+)
+"""Caption under the digital's value-vs-spot chart for an ASSET-or-nothing payout (the
+counterpart of :data:`DIGITAL_PRICE_CAPTION`), by option type: the asset-or-nothing
+(blue) against its replication (orange), and why it is as hard to hedge at the strike as
+the cash digital."""
+
 # web/src/components/exotics/AutocallView.tsx:162-166
 AUTOCALL_PATHS_CAPTION: Final = (
     "Each path either crosses the autocall line on an observation date (early redemption at "
@@ -218,6 +309,13 @@ AUTOCALL_PATHS_CAPTION: Final = (
 AUTOCALL_MEMORY_HINT: Final = "Memory (snowball) coupon"
 """Hint for the memory toggle: missed coupons are paid later if the coupon barrier is
 met again."""
+
+# Streamlit-UI addition (the React Learn panel offers a gamma chip the view never fills).
+AUTOCALL_GAMMA_NOTE: Final = (
+    "No gamma here: a Monte-Carlo gamma is the second difference of three noisy prices, too "
+    "noisy to report even with common random numbers."
+)
+"""Shown under the autocallable's price & greek chips, which leave gamma out."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,9 +355,52 @@ VARSWAP_SKEW_HINT: Final = (
 )
 """Instruction under the variance swap's smile controls."""
 
+# Streamlit-UI addition (the React views have no Reset).
+RESET_VIEW_HINT: Final = "Restore the opening inputs"
+"""Tooltip of each exotic view's Reset button: every input back to the view's seed."""
+
+# Streamlit-UI addition (no React counterpart: the React variance swap has no skew switch).
+VARSWAP_SKEW_SWITCH_HINT: Final = "Off: a flat smile at the ATM vol (slope and curvature ignored)."
+"""Hint for the variance swap's skew on/off switch: off prices the strip on a flat smile,
+so the fair vol falls to (about) the ATM vol; switching it back on shows what the skew adds."""
+
 # web/src/components/exotics/VarSwapView.tsx:110-113
 VARSWAP_STRIP_CAPTION: Final = (
     "Each OTM option's 1/K²-weighted contribution to fair variance. Puts (below F) carry "
     "more weight — the source of the convexity premium."
 )
 """Caption under the variance swap's replication-strip chart."""
+
+
+__all__ = [
+    "AUTOCALL_DIAGNOSTICS",
+    "AUTOCALL_GAMMA_NOTE",
+    "AUTOCALL_MEMORY_HINT",
+    "AUTOCALL_PATHS_CAPTION",
+    "BARRIER_BREACHED_NOTES",
+    "BARRIER_CHART_CAPTION",
+    "BARRIER_DIRECTION_HINT",
+    "BARRIER_KNOCK_HINT",
+    "BARRIER_STRIKE_BEYOND_NOTES",
+    "DIGITAL_ASSET_PRICE_CAPTIONS",
+    "DIGITAL_GREEK_CAPTION",
+    "DIGITAL_PAYOUT_HINT",
+    "DIGITAL_PRICE_CAPTION",
+    "EXOTIC_DOCS",
+    "EXOTIC_DOC_FIELD_LABELS",
+    "EXOTIC_GREEK_DOC_FIELDS",
+    "EXOTIC_KINDS",
+    "EXOTIC_METRICS",
+    "EXOTIC_TAB_LABELS",
+    "RESET_VIEW_HINT",
+    "VARSWAP_FAIR_VOL_NOTE",
+    "VARSWAP_READOUT",
+    "VARSWAP_SKEW_HINT",
+    "VARSWAP_SKEW_SWITCH_HINT",
+    "VARSWAP_STRIP_CAPTION",
+    "ExoticDoc",
+    "ExoticDocField",
+    "ExoticKind",
+    "ExoticMetric",
+    "ReadoutNote",
+]

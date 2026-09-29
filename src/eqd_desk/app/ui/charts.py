@@ -23,6 +23,12 @@ Hovering any line chart shows a crosshair and a tooltip with every series at tha
 values formatted by :mod:`eqd_desk.app.ui.format` (so a tooltip prints exactly what the React
 app prints).
 
+Axes read like the React ones by default: the y ticks print ``fmtNum(v, 3)``
+(:data:`FMT_NUM_3`, the React ``tickFormatter`` of every greek / P&L chart; Vega's adaptive
+format where three significant figures cannot tell the ticks apart), and the x axis
+is tidied (:data:`X_TICK_COUNT` ticks, labels thinned so they never collide, an end label
+that would be cut off hidden) so dense mono labels stay legible at any chart width.
+
 Typical use::
 
     from eqd_desk.app.ui import charts
@@ -44,7 +50,7 @@ Typical use::
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Literal, cast
@@ -53,17 +59,111 @@ import altair as alt
 import pandas as pd
 
 from eqd_desk.app.ui import theme
-from eqd_desk.app.ui.format import fmt_money, fmt_num
+from eqd_desk.app.ui.format import fmt_level, fmt_money, fmt_num
 
 DEFAULT_HEIGHT: Final = 320
 """Main chart height in px (React ``.chart-wrap``)."""
 SHORT_HEIGHT: Final = 210
 """Secondary chart height in px (React ``.chart-wrap.short``)."""
+MEDIUM_HEIGHT: Final = 250
+"""Between short and default, in px (React VarSwapView's strip, ``style={{ height: 250 }}``):
+a companion chart that needs a little more room than a short one."""
 TALL_HEIGHT: Final = 420
 """Hero chart height in px (the exotics' characteristic charts)."""
 
 TickFormatter = Callable[[float], str]
 """Formats a number for a tooltip (a :mod:`~eqd_desk.app.ui.format` function)."""
+
+# ------------------------------------------------------------------ axis formats
+
+FMT_NUM_3: Final = "fmtNum3"
+"""Axis-format name (not a d3 format): print the ticks like ``format.ts`` ``fmtNum(v, 3)``,
+the React y-axis ``tickFormatter`` (a delta axis reads ``0.250``, ``0.500``; a gamma axis
+``0.000700``; a speed axis ``1.20e-6``). The default y format of :func:`line_chart`."""
+
+FMT_NUM_3_LABEL_EXPR: Final = (
+    "datum.value == 0 ? '0' : "
+    "(abs(datum.value) >= 1e7 || abs(datum.value) < 1e-4) ? format(datum.value, '.2e') : "
+    "format(datum.value, "
+    "'.' + clamp(3 - (floor(log(abs(datum.value)) / LN10) + 1), 0, 8) + 'f')"
+)
+"""Vega expression behind :data:`FMT_NUM_3`: ``0``; two-decimal exponent outside
+1e-4 … 1e7; otherwise ``3 − integer digits`` decimals, clamped to 0 … 8."""
+
+SPOT_AXIS_FORMAT: Final = ",.0f"
+"""d3 format of an index-level axis (spot, strike): whole points with a thousands separator
+(``6,300``)."""
+
+X_TICK_COUNT: Final = 8
+"""Tick-count hint of every x axis. Without it Vega aims at one tick per 40 px and picks,
+e.g., a 200-point step on a 70 %–130 % spot axis, whose grouped mono labels then collide."""
+X_LABEL_GAP_PX: Final = 6
+"""Minimum gap between neighbouring x tick labels; closer ones are thinned out (every other
+label is dropped until they fit)."""
+X_LABEL_BOUND_PX: Final = 8
+"""Pixels by which an x tick label may spill past either end of the axis before it is
+hidden rather than cut in half (the chart's right padding is 10 px, so a kept label is never
+clipped). A label exactly at an end (0 on a time axis) is aligned inside the plot instead."""
+
+
+def fmt_num_3_step(value: float) -> float:
+    """The smallest difference ``fmtNum(v, 3)`` shows at the magnitude of ``value``: three
+    significant figures (``53.1`` → 0.1, ``0.0007`` → 1e-6), clamped to 8 decimals like
+    ``fmtNum``; 0 for ``value == 0``."""
+    a = abs(value)
+    if a == 0 or not math.isfinite(a):
+        return 0.0
+    exponent = math.floor(math.log10(a))
+    if a >= 1e7 or a < 1e-4:
+        return float(10.0 ** (exponent - 2))  # two-decimal exponential: 1.23e-6
+    return float(10.0 ** -min(8, max(0, 3 - (exponent + 1))))
+
+
+def fmt_num_3_fits(lo: float, hi: float, *, ticks: int = 10) -> bool:
+    """Whether ``fmtNum(v, 3)`` tick labels stay distinct on an axis spanning ``[lo, hi]``
+    with up to ``ticks`` ticks: False for a narrow range far from zero (53.13 … 53.14 would
+    print "53.1" at every tick), where :func:`line_chart` falls back to Vega's adaptive
+    format. A flat axis (``lo == hi``) has one tick and always fits."""
+    span = hi - lo
+    if span <= 0:
+        return True
+    return fmt_num_3_step(max(abs(lo), abs(hi))) <= span / ticks
+
+
+def axis_format(fmt: str | None) -> dict[str, Any]:
+    """``alt.Axis`` keyword arguments of a tick format: ``None`` = Vega's adaptive default,
+    :data:`FMT_NUM_3` = React's ``fmtNum(v, 3)``, anything else a d3-format string
+    (``".0%"``, ``",.0f"``)."""
+    if fmt is None:
+        return {}
+    if fmt == FMT_NUM_3:
+        return {"labelExpr": FMT_NUM_3_LABEL_EXPR}
+    return {"format": fmt}
+
+
+def tidy_x_axis(tick_count: int | None = X_TICK_COUNT) -> dict[str, Any]:
+    """``alt.Axis`` keyword arguments that keep x tick labels whole and apart: about
+    ``tick_count`` ticks (``None`` = Vega's default density), overlapping labels thinned
+    (``labelOverlap`` with a :data:`X_LABEL_GAP_PX` separation), end labels flush with the
+    plot and any that would still spill more than :data:`X_LABEL_BOUND_PX` hidden."""
+    props: dict[str, Any] = {
+        "labelOverlap": True,
+        "labelSeparation": X_LABEL_GAP_PX,
+        "labelFlush": True,
+        "labelBound": X_LABEL_BOUND_PX,
+    }
+    if tick_count is not None:
+        props["tickCount"] = tick_count
+    return props
+
+
+def level_text(x: float) -> str:
+    """An index level (spot, strike) in a tooltip: whole points, grouped like the axis ticks
+    (:data:`SPOT_AXIS_FORMAT`) and the readouts (``Spot 6,312``). React's tooltips print
+    ``Number(v).toFixed(0)`` (``6312``) under axes that it also leaves ungrouped; here the
+    axes are grouped, so the hover matches them."""
+    return fmt_level(x, 0)
+
 
 RuleStyle = Literal[
     "current", "strike", "barrier", "forward", "autocall", "coupon", "protection", "marker"
@@ -306,9 +406,10 @@ def line_chart(
     x_title: str,
     y_title: str,
     x_format: str | None = None,
-    y_format: str | None = None,
+    y_format: str | None = FMT_NUM_3,
     x_tooltip: TickFormatter = fmt_num,
     y_tooltip: TickFormatter = fmt_num,
+    x_tick_count: int | None = X_TICK_COUNT,
     vrules: Sequence[VRule] = (),
     hrules: Sequence[HRule] = (),
     zero_rule: bool = True,
@@ -327,10 +428,17 @@ def line_chart(
         series: the curves, drawn in order (the last one on top).
         x_title, y_title: axis titles; ``y_title`` should carry the unit
             (use :data:`eqd_desk.engine.GREEK_UNITS`).
-        x_format, y_format: d3-format strings for the axis ticks (e.g. ``".0%"`` for a vol
-            axis, ``",.0f"`` for levels); ``None`` = Vega's adaptive default.
+        x_format, y_format: tick formats (see :func:`axis_format`): a d3-format string
+            (``".0%"`` for a vol axis, :data:`SPOT_AXIS_FORMAT` for levels), :data:`FMT_NUM_3`
+            (React's ``fmtNum(v, 3)``, the y default) or ``None`` (Vega's adaptive default,
+            the x default). A :data:`FMT_NUM_3` y axis whose range is too narrow for three
+            significant figures (:func:`fmt_num_3_fits`) uses Vega's default instead.
         x_tooltip, y_tooltip: formatters for the hover tooltip (default
-            :func:`~eqd_desk.app.ui.format.fmt_num`, the React tooltip format).
+            :func:`~eqd_desk.app.ui.format.fmt_num`, the React tooltip format; use
+            :func:`level_text` for a spot / strike x (``Spot 6,312``) and
+            :func:`~eqd_desk.app.ui.format.fmt_money` for a money series).
+        x_tick_count: tick-count hint of the x axis (:func:`tidy_x_axis`; the labels are
+            always thinned so they never collide); ``None`` = Vega's default density.
         vrules, hrules: reference lines (:class:`VRule` / :class:`HRule`).
         zero_rule: draw the y = 0 axis line (only when 0 is inside the y range, like a
             Recharts ``ReferenceLine y={0}``).
@@ -361,18 +469,24 @@ def line_chart(
         "x:Q",
         title=x_title,
         scale=alt.Scale(domain=list(x_range), nice=False, zero=False),
-        axis=alt.Axis(format=x_format) if x_format else alt.Axis(),
+        axis=alt.Axis(**axis_format(x_format), **tidy_x_axis(x_tick_count)),
     )
     y_scale = (
         alt.Scale(domain=list(y_domain), nice=False, zero=False)
         if y_domain is not None
         else alt.Scale(zero=y_zero, nice=True)
     )
+    if y_format == FMT_NUM_3 and y_range is not None:
+        lo, hi = y_domain if y_domain is not None else y_range
+        if y_domain is None and y_zero:
+            lo, hi = min(lo, 0.0), max(hi, 0.0)
+        if not fmt_num_3_fits(lo, hi):
+            y_format = None  # 3 significant figures cannot tell these ticks apart
     y_enc = alt.Y(
         "y:Q",
         title=y_title,
         scale=y_scale,
-        axis=alt.Axis(format=y_format) if y_format else alt.Axis(),
+        axis=alt.Axis(**axis_format(y_format)),
     )
     color_scale = alt.Scale(domain=labels, range=[s.color for s in specs])
     color_enc = alt.Color(
@@ -445,24 +559,34 @@ def line_chart(
 
 
 def payoff_chart(
-    spots: Sequence[float],
-    expiry: Sequence[float],
-    now: Sequence[float],
+    spots: Iterable[float],
+    expiry: Iterable[float],
+    now: Iterable[float],
     *,
     spot: float,
-    strikes: Sequence[float] = (),
+    strikes: Iterable[float] = (),
     expiry_label: str = "At expiry",
     now_label: str = "Now",
     x_title: str = "Spot",
     y_title: str = "Value",
+    x_format: str | None = SPOT_AXIS_FORMAT,
+    y_format: str | None = FMT_NUM_3,
+    x_tooltip: TickFormatter = level_text,
+    y_tooltip: TickFormatter = fmt_money,
     height: int = SHORT_HEIGHT,
 ) -> alt.LayerChart:
     """Payoff at expiry (solid line colour, 2 px) against the value now (thin accent, 1.5 px),
     with the current spot (dashed accent), the strikes (dotted) and the zero line.
 
     The React convention: the gap between the two curves is time value (single option) or the
-    mark-to-market vs expiry P&L (a structure). Pass P&L arrays and ``y_title="P&L"`` for a
-    strategy; values and ``y_title="Value"`` for a single option.
+    mark-to-market vs expiry P&L (a structure). Pass P&L arrays and ``y_title="P&L (USD)"``
+    for a strategy; values and ``y_title="Value (USD)"`` for a single option. The axes read
+    as React's (``PlotsPanel.tsx`` / ``StrategyPlots.tsx``): spot ticks in whole points, y
+    ticks ``fmtNum(v, 3)``; the hover reads like the axes and the readouts: ``Spot 6,312``
+    and each curve in money (``119.61``, two decimals, as the premium hero prints it).
+    ``x_format`` / ``y_format`` / ``x_tooltip`` / ``y_tooltip`` override
+    them (same meaning as in :func:`line_chart`). Columns of a DataFrame work as the
+    sequences: ``payoff_chart(df["S"], df["expiry"], df["now"], spot=…)``.
     """
     df = pd.DataFrame({"spot": list(spots), "now": list(now), "expiry": list(expiry)})
     return line_chart(
@@ -474,6 +598,10 @@ def payoff_chart(
         ],
         x_title=x_title,
         y_title=y_title,
+        x_format=x_format,
+        y_format=y_format,
+        x_tooltip=x_tooltip,
+        y_tooltip=y_tooltip,
         vrules=[VRule(spot, "current"), *(VRule(k, "strike") for k in dict.fromkeys(strikes))],
         zero_rule=True,
         height=height,
@@ -546,10 +674,13 @@ def dual_axis_chart(
     right_tooltip: TickFormatter = fmt_num,
     left_zero: bool = False,
     right_zero: bool = False,
+    x_tick_count: int | None = X_TICK_COUNT,
     height: int = SHORT_HEIGHT,
 ) -> alt.LayerChart:
     """Two series on independent y axes (left and right) against a shared x: the simulator's
-    spot & implied-vol path. Hover shows both values."""
+    spot & implied-vol path. Hover shows both values. The x axis is tidied like
+    :func:`line_chart`'s (``x_tick_count``); the y formats are d3 strings or
+    :data:`FMT_NUM_3` (see :func:`axis_format`), Vega's default when ``None``."""
     wide = pd.DataFrame(
         {
             "x": pd.to_numeric(data[x], errors="coerce").astype(float),
@@ -564,7 +695,10 @@ def dual_axis_chart(
     wide["l_text"] = wide["l"].map(left_tooltip)
     wide["r_text"] = wide["r"].map(right_tooltip)
     x_enc = alt.X(
-        "x:Q", title=x_title, scale=alt.Scale(domain=list(x_range), nice=False, zero=False)
+        "x:Q",
+        title=x_title,
+        scale=alt.Scale(domain=list(x_range), nice=False, zero=False),
+        axis=alt.Axis(**tidy_x_axis(x_tick_count)),
     )
     color = alt.Color(
         "name:N",
@@ -581,9 +715,7 @@ def dual_axis_chart(
         zero: bool,
         orient: Literal["left", "right"],
     ) -> alt.Chart:
-        axis = alt.Axis(orient=orient, grid=orient == "left")
-        if fmt:
-            axis = alt.Axis(orient=orient, grid=orient == "left", format=fmt)
+        axis = alt.Axis(orient=orient, grid=orient == "left", **axis_format(fmt))
         line: alt.Chart = (
             alt.Chart(wide.assign(name=spec.label))
             .mark_line(
@@ -638,3 +770,36 @@ def show_chart(chart: Any, *, key: str | None = None) -> None:
     import streamlit as st
 
     st.altair_chart(chart, theme=None, width="stretch", key=key)
+
+
+__all__ = [
+    "DEFAULT_HEIGHT",
+    "FMT_NUM_3",
+    "FMT_NUM_3_LABEL_EXPR",
+    "MEDIUM_HEIGHT",
+    "RULE_STYLES",
+    "SHORT_HEIGHT",
+    "SPOT_AXIS_FORMAT",
+    "TALL_HEIGHT",
+    "X_LABEL_BOUND_PX",
+    "X_LABEL_GAP_PX",
+    "X_TICK_COUNT",
+    "HRule",
+    "RuleLook",
+    "RuleStyle",
+    "Series",
+    "TickFormatter",
+    "VRule",
+    "axis_format",
+    "bar_chart",
+    "dual_axis_chart",
+    "fmt_num_3_fits",
+    "fmt_num_3_step",
+    "level_text",
+    "line_chart",
+    "payoff_chart",
+    "show_chart",
+    "style_chart",
+    "sweep_x",
+    "tidy_x_axis",
+]

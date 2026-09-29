@@ -100,6 +100,96 @@ def test_line_chart_single_series_encodings_and_style() -> None:
     assert s["width"] == "container"
 
 
+def test_line_chart_axes_read_like_the_react_charts_by_default() -> None:
+    """y ticks print fmtNum(v, 3) (React's tickFormatter); the x axis is tidied: a tick-count
+    hint, colliding labels thinned, end labels kept inside the plot."""
+    s = spec(
+        charts.line_chart(
+            sample_frame(), x="S", series=Series("a", "Delta"), x_title="Spot", y_title="Delta"
+        )
+    )
+    enc = of_type(s, "line")[0]["encoding"]
+    assert enc["y"]["axis"] == {"labelExpr": charts.FMT_NUM_3_LABEL_EXPR}
+    x_axis = enc["x"]["axis"]
+    assert x_axis["tickCount"] == charts.X_TICK_COUNT
+    assert x_axis["labelOverlap"] is True
+    assert x_axis["labelSeparation"] == charts.X_LABEL_GAP_PX
+    assert x_axis["labelFlush"] is True
+    assert x_axis["labelBound"] == charts.X_LABEL_BOUND_PX
+    assert "format" not in x_axis  # Vega's adaptive default unless x_format is given
+
+
+def test_axis_formats_and_opt_outs() -> None:
+    assert charts.axis_format(None) == {}
+    assert charts.axis_format(charts.FMT_NUM_3) == {"labelExpr": charts.FMT_NUM_3_LABEL_EXPR}
+    assert charts.axis_format(".0%") == {"format": ".0%"}
+    assert "tickCount" not in charts.tidy_x_axis(None)
+    s = spec(
+        charts.line_chart(
+            sample_frame(),
+            x="S",
+            series=Series("a", "P&L"),
+            x_title="Day",
+            y_title="P&L",
+            x_format="d",
+            y_format=None,
+            x_tick_count=None,
+        )
+    )
+    enc = of_type(s, "line")[0]["encoding"]
+    assert "labelExpr" not in enc["y"]["axis"]
+    assert "format" not in enc["y"]["axis"]
+    assert enc["x"]["axis"]["format"] == "d"
+    assert "tickCount" not in enc["x"]["axis"]
+    assert enc["x"]["axis"]["labelOverlap"] is True  # thinning always on
+
+
+@pytest.mark.parametrize(
+    ("value", "step"),
+    [
+        (53.14, 0.1),
+        (250.0, 1.0),
+        (6312.45, 1.0),
+        (0.5, 1e-3),
+        (0.0007, 1e-6),
+        (4.2e-6, 1e-8),
+        (-12.0, 0.1),
+        (0.0, 0.0),
+    ],
+)
+def test_fmt_num_3_step(value: float, step: float) -> None:
+    assert charts.fmt_num_3_step(value) == pytest.approx(step)
+
+
+def test_fmt_num_3_fits_only_ranges_it_can_label() -> None:
+    assert charts.fmt_num_3_fits(-200.0, 200.0)  # a P&L axis
+    assert charts.fmt_num_3_fits(0.0, 0.0007)  # a gamma axis
+    assert charts.fmt_num_3_fits(53.1, 53.1)  # flat: a single tick
+    assert not charts.fmt_num_3_fits(53.13, 53.14)  # would print "53.1" at every tick
+
+
+def test_a_narrow_y_range_falls_back_to_vega_ticks() -> None:
+    df = pd.DataFrame({"w": [50.0, 100.0, 150.0], "v": [53.141, 53.138, 53.132]})
+    s = spec(
+        charts.line_chart(
+            df, x="w", series=Series("v", "Spread"), x_title="Width", y_title="Value", y_zero=False
+        )
+    )
+    y_axis = of_type(s, "line")[0]["encoding"]["y"]["axis"]
+    assert "labelExpr" not in y_axis
+    # ... but not when zero is on the axis (0 … 53.14 is a wide range)
+    s = spec(charts.line_chart(df, x="w", series=Series("v", "S"), x_title="W", y_title="V"))
+    assert of_type(s, "line")[0]["encoding"]["y"]["axis"]["labelExpr"]
+
+
+def test_level_text_prints_whole_points_grouped_like_the_axis() -> None:
+    # whole points (React's toFixed(0) rounding), grouped like SPOT_AXIS_FORMAT ticks
+    assert charts.level_text(6312.45) == "6,312"
+    assert charts.level_text(6312.5) == "6,313"
+    assert charts.level_text(-12.4) == "-12"
+    assert charts.level_text(950.0) == "950"
+
+
 def test_line_chart_reference_lines_follow_the_react_vocabulary() -> None:
     s = spec(
         charts.line_chart(
@@ -258,6 +348,41 @@ def test_payoff_chart_marks_spot_and_distinct_strikes() -> None:
     ]
     assert sorted(vertical) == [100.0, 101.0, 105.0]
     assert s["height"] == charts.SHORT_HEIGHT
+    # React's payoff axes: spot in whole points, y ticks fmtNum(v, 3); the hover reads like
+    # the axes and the readouts: grouped whole points, money with two decimals
+    enc = lines[0]["encoding"]
+    assert enc["x"]["axis"]["format"] == charts.SPOT_AXIS_FORMAT
+    assert enc["y"]["axis"]["labelExpr"] == charts.FMT_NUM_3_LABEL_EXPR
+    tip = next(lay for lay in of_type(s, "rule") if "tooltip" in lay["encoding"])
+    assert [r["x_text"] for r in rows(s, tip)] == ["90", "100", "110"]
+    assert [r["t0"] for r in rows(s, tip)] == ["1.00", "4.00", "11.00"]
+    assert [r["t0"] for r in rows(s, tip)] == [fmt_money(v) for v in (1.0, 4.0, 11.0)]
+
+
+def test_payoff_chart_takes_frame_columns_and_format_overrides() -> None:
+    df = pd.DataFrame({"S": [90.0, 110.0], "expiry": [0.0, 10.0], "now": [1.0, 11.0]})
+    s = spec(
+        charts.payoff_chart(
+            df["S"],
+            df["expiry"],
+            df["now"],
+            spot=100.0,
+            y_title="P&L (USD)",
+            x_format=None,
+            y_format=",.2f",
+            x_tooltip=fmt_money,
+            y_tooltip=fmt_money,
+            height=320,
+        )
+    )
+    enc = of_type(s, "line")[0]["encoding"]
+    assert "format" not in enc["x"]["axis"]
+    assert enc["y"]["axis"]["format"] == ",.2f"
+    assert enc["y"]["title"] == "P&L (USD)"
+    tip = next(lay for lay in of_type(s, "rule") if "tooltip" in lay["encoding"])
+    assert rows(s, tip)[0]["x_text"] == fmt_money(90.0)
+    assert rows(s, tip)[1]["t1"] == fmt_money(10.0)
+    assert s["height"] == 320
 
 
 def test_bar_chart_colours_by_sign_in_given_order() -> None:
@@ -297,6 +422,7 @@ def test_dual_axis_chart_has_independent_axes() -> None:
     lines = of_type(s, "line")
     assert [lay["encoding"]["y"]["axis"]["orient"] for lay in lines] == ["left", "right"]
     assert lines[1]["encoding"]["y"]["axis"]["format"] == ".0%"
+    assert lines[0]["encoding"]["x"]["axis"]["tickCount"] == charts.X_TICK_COUNT
     tip = next(lay for lay in of_type(s, "rule") if "tooltip" in lay["encoding"])
     assert rows(s, tip)[1]["r_text"] == fmt_pct(0.16)
 

@@ -9,11 +9,12 @@ The look mirrors ``EducationPanel.tsx`` / ``StrategyEducation.tsx`` / ``ExoticIn
 the simulator's Learn panel: a bordered card with a title and labelled fields (label in
 small accent capitals-style bold, text below), relationships and concepts as expanders.
 
-Typical use (a greeks-lab right column)::
+Typical use (a greeks-lab right column; the picker's key holds the selected greek)::
 
+    selected = st.session_state.get("lab.greek", "delta")
     with st.container(border=True):
-        learn_header(badge=GREEK_UNITS[selected].unit)
-        selected = greek_picker(key="lab.greek")
+        learn_header(badge=greek_unit(selected, snap.currency))
+        greek_picker(key="lab.greek")
         greek_doc_card(selected)
         key_relationships()
 """
@@ -79,7 +80,8 @@ def learn_header(
     *, badge: str | None = None, badge_color: BadgeColor = "gray", title: str = "Learn"
 ) -> None:
     """The "Learn" title row of an education panel, with an optional tag (the greek's unit,
-    the preset name, "exotic", "market-making")."""
+    see :func:`~eqd_desk.app.ui.units.greek_unit`; the preset name, "exotic",
+    "market-making")."""
     section_header(title, icon=":material/school:", badge=badge, badge_color=badge_color)
 
 
@@ -115,10 +117,10 @@ STRATEGY_FIELDS: tuple[StrategyDocField, ...] = tuple(STRATEGY_DOC_FIELD_LABELS)
 def strategy_doc_card(preset: PresetName | None, *, title: str) -> None:
     """The desk rationale of a preset structure (the view, structure, greek signature,
     principal risk) titled with its display label; ``preset=None`` (legs edited by hand)
-    shows the "custom structure" note instead."""
+    shows only the dim "custom structure" note, untitled, as ``StrategyEducation.tsx`` does
+    (the Learn header's tag already names the structure), so ``title`` is not shown then."""
     with st.container(border=True):
         if preset is None:
-            card_title(title)
             st.markdown(f":gray[{markdown_safe(CUSTOM_STRUCTURE_NOTE)}]")
             return
         doc = STRATEGY_DOCS[preset]
@@ -166,3 +168,22 @@ def attribution_terms(*, heading: str | None = "P&L explain terms") -> None:
     if heading:
         sub_heading(heading)
     doc_fields([(t.label, t.note) for t in ATTRIBUTION_TERMS])
+
+
+__all__ = [
+    "EXOTIC_FIELDS",
+    "GREEK_DOC_FIELDS",
+    "STRATEGY_FIELDS",
+    "attribution_terms",
+    "card_title",
+    "doc_fields",
+    "exotic_doc_card",
+    "exotic_greek_card",
+    "field_markdown",
+    "greek_doc_card",
+    "key_relationships",
+    "learn_header",
+    "sim_concepts",
+    "strategy_doc_card",
+    "teaching_caption",
+]

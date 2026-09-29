@@ -1,5 +1,7 @@
-"""The greeks lab's charts plot the curves they are given, with the React titles, reference
-lines, hover labels and ``fmtNum(v, 3)`` y ticks (asserted on the Vega-Lite spec)."""
+"""The greeks lab's greek chart plots the sweep it is given, with the React titles, reference
+lines, hover labels and ``fmtNum(v, 3)`` y ticks (asserted on the Vega-Lite spec). The payoff
+chart is the shared ``charts.payoff_chart`` (tested in ``test_charts.py``; the page's use of
+it in ``tests/app/test_greeks_lab.py``)."""
 
 from __future__ import annotations
 
@@ -7,10 +9,11 @@ from typing import Any
 
 import pytest
 
+from eqd_desk.app.ui import charts
 from eqd_desk.app.ui import greeks_lab_charts as lab_charts
 from eqd_desk.app.ui import greeks_lab_curves as curves
-from eqd_desk.app.ui import theme
 from eqd_desk.app.ui.format import fmt_num
+from eqd_desk.content import GREEK_KEYS, GreekKey
 from eqd_desk.content.greeks import XAxisKey
 from eqd_desk.data import load_snapshot, seed_inputs
 
@@ -91,7 +94,7 @@ def test_greek_chart_plots_the_selected_greek(x_axis: XAxisKey) -> None:
     assert line["encoding"]["y"]["title"] == "Gamma (Δdelta per $1 spot)"
     assert s["height"] == lab_charts.GREEK_CHART_HEIGHT
     # y ticks as the React tickFormatter (fmtNum(v, 3)); hover as React's labelFormatter
-    assert s["config"]["axisY"]["labelExpr"] == lab_charts.FMT_NUM_3_LABEL_EXPR
+    assert line["encoding"]["y"]["axis"]["labelExpr"] == charts.FMT_NUM_3_LABEL_EXPR
     hover = next(lay for lay in of_type(s, "rule") if "tooltip" in lay["encoding"])
     tips = rows(s, hover)
     assert [t["x_text"] for t in tips] == [curves.x_tick(x_axis, x) for x in sweep["x"]]
@@ -99,29 +102,45 @@ def test_greek_chart_plots_the_selected_greek(x_axis: XAxisKey) -> None:
     assert hover["encoding"]["tooltip"][0]["title"] == curves.X_AXIS_LABELS[x_axis]
 
 
-def test_payoff_chart_draws_premium_now_under_intrinsic_at_expiry() -> None:
-    curve = curves.payoff_curve(SEED, "call", SNAP.spot)
-    s = lab_charts.payoff_chart(curve, inputs=SEED, currency="USD").to_dict()
-    now, expiry = of_type(s, "line")  # "Now" first: the expiry curve is drawn on top
-    assert [d["y"] for d in rows(s, now)] == list(curve["now"])
-    assert [d["y"] for d in rows(s, expiry)] == list(curve["expiry"])
-    assert {d["series"] for d in rows(s, now)} == {"Now"}
-    assert {d["series"] for d in rows(s, expiry)} == {"At expiry"}
-    assert (mark(now)["strokeWidth"], mark(expiry)["strokeWidth"]) == (1.5, 2.0)
-    scale = now["encoding"]["color"]["scale"]
-    assert (scale["domain"], scale["range"]) == (["Now", "At expiry"], [theme.ACCENT, theme.LINE])
-    assert rules_x(s) == [(SEED.S, [4, 3]), (SEED.K, [1, 4])]
-    assert expiry["encoding"]["y"]["title"] == "Value (USD)"
-    assert s["height"] == lab_charts.PAYOFF_CHART_HEIGHT
-    hover = next(lay for lay in of_type(s, "rule") if "tooltip" in lay["encoding"])
-    assert rows(s, hover)[0]["x_text"] == curves.x_tick("S", float(curve["spot"].iloc[0]))
-    assert s["config"]["axisY"]["labelExpr"] == lab_charts.FMT_NUM_3_LABEL_EXPR
+@pytest.mark.parametrize("x_axis", curves.X_AXES)
+def test_every_greek_keeps_fmt_num_3_y_ticks(x_axis: XAxisKey) -> None:
+    """The shared line chart falls back to Vega's tick format on a narrow y range; a greek
+    sweep's axis includes 0, so every greek (and the price, call and put) keeps the React
+    fmtNum(v, 3) ticks on every x axis."""
+    for option_type in ("call", "put"):
+        sweep = curves.greek_sweep(SEED, option_type, x_axis, SNAP.spot)
+        for greek in GREEK_KEYS:
+            chart = lab_charts.greek_chart(sweep, greek, x_axis, inputs=SEED, currency="USD")
+            (line,) = of_type(chart.to_dict(), "line")
+            y_axis = line["encoding"]["y"]["axis"]
+            assert y_axis == {"labelExpr": charts.FMT_NUM_3_LABEL_EXPR}, (option_type, greek)
 
 
-def test_label_expr_follows_fmt_num_3() -> None:
-    """The Vega expression mirrors fmtNum(v, 3): zero, exponent bounds, 3 − int digits."""
-    expr = lab_charts.FMT_NUM_3_LABEL_EXPR
+def test_y_tick_expression_follows_fmt_num_3() -> None:
+    """The greek chart's y-tick expression (the shared one) mirrors fmtNum(v, 3): zero,
+    exponent bounds, 3 − integer digits."""
+    expr = charts.FMT_NUM_3_LABEL_EXPR
     assert "datum.value == 0 ? '0'" in expr
     assert "abs(datum.value) >= 1e7 || abs(datum.value) < 1e-4" in expr
     assert "format(datum.value, '.2e')" in expr
     assert "clamp(3 - (floor(log(abs(datum.value)) / LN10) + 1), 0, 8)" in expr
+
+
+@pytest.mark.parametrize(
+    ("greek", "x_axis"),
+    [("vanna", "sigma"), ("volga", "sigma"), ("charm", "T"), ("delta", "S")],
+)
+def test_greek_chart_leaves_room_above_the_top_tick_label(
+    greek: GreekKey, x_axis: XAxisKey
+) -> None:
+    """Regression: ``st.altair_chart`` replaces a missing top-level ``padding`` with
+    ``{"bottom": 20}`` (the shared ``config.padding`` never applies), so the plot started at
+    the top edge of the canvas and, after switching to vanna vs vol, Vega's autosize left the
+    top tick label ("0.0100") half above it. The greek chart carries its own top-level
+    padding, which Streamlit keeps, with room for a label centred on the plot's top edge
+    (about 6.5 px above it at the 11 px axis font)."""
+    sweep = curves.greek_sweep(SEED, "call", x_axis, SNAP.spot)
+    s = lab_charts.greek_chart(sweep, greek, x_axis, inputs=SEED, currency="USD").to_dict()
+    assert s["padding"] == dict(lab_charts.GREEK_CHART_PADDING)
+    assert s["padding"]["top"] >= 8
+    assert s["padding"]["bottom"] == 20  # Streamlit's own default, kept

@@ -29,9 +29,12 @@ from eqd_desk.app.ui.simulator_display import (
     bid_ask_text,
     blotter_rows,
     book_rows,
+    book_units,
     days_text,
     edge_costs_text,
     fill_rate,
+    flatten_instruments,
+    grouped_replay_caption,
     history_frame,
     impact_text,
     joint_leg_line,
@@ -40,16 +43,22 @@ from eqd_desk.app.ui.simulator_display import (
     plan_line,
     pnl_caption,
     pnl_tag,
+    pnl_trend,
     positions_count,
     positions_heading,
+    prints_zero,
     replay_caption,
     rfq_chip,
     rfq_detail,
     rfq_legs,
     scorecard,
+    settled,
+    settled_value,
     show_joint,
     speed_text,
     spread_text,
+    tick_theta_caption,
+    ticket_cost_view,
     ticket_preview_text,
     warned,
 )
@@ -342,3 +351,118 @@ def test_show_joint_needs_both_gamma_and_vega(
 ) -> None:
     jh = JointHedge(feasible=feasible, legs=(), rationale="")
     assert show_joint(jh, greeks(vega=vega, gamma=gamma)) is shown
+
+
+# ------------------------------------------------------------------ departures from React
+
+
+@pytest.mark.parametrize(
+    ("text", "zero"),
+    [
+        ("0", True),
+        ("0.00", True),
+        (f"{MINUS}0.00", True),
+        ("-0.000", True),
+        ("+0.00", True),
+        ("0%", True),
+        ("0.01", False),
+        (f"{MINUS}17.43", False),
+        ("6,312.45", False),
+        ("0% (0/0)", False),
+        ("-1.36e-13", False),
+        ("—", False),
+    ],
+)
+def test_prints_zero(text: str, zero: bool) -> None:
+    assert prints_zero(text) is zero
+
+
+def test_settled_value_takes_the_sign_and_colour_off_a_zero() -> None:
+    assert settled_value(f"{MINUS}0.00", "neg") == ("0.00", "zero")
+    assert settled_value("0.00", "pos") == ("0.00", "zero")
+    assert settled_value("+0.00", "zero") == ("+0.00", "zero")  # a P&L keeps its "+"
+    assert settled_value("—", "neg") == ("—", "zero")  # missing: grey, not red
+    assert settled_value(f"{MINUS}17.43", "neg") == (f"{MINUS}17.43", "neg")
+    assert settled_value("0% (0/0)", None) == ("0% (0/0)", None)
+
+
+def test_the_seed_desk_shows_no_red_or_signed_zero() -> None:
+    """React shows "Costs paid −0.00" in red, a green "0.00" edge and a red dash for the
+    realised vol on a fresh desk; the page shows them grey and unsigned."""
+    s = fresh().state
+    card = [settled(ln) for ln in scorecard(s, book_greeks(s.book, s.market), 0.0)]
+    assert card[:3] == [
+        StatLine("P&L", "+0.00", "zero"),
+        StatLine("Edge captured", "0.00", "zero"),
+        StatLine("Costs paid", "0.00", "zero"),
+    ]
+    market = [settled(ln) for ln in market_stats(s, "simulated", None, None)]
+    assert market[2] == StatLine("Realised vol", "—", "zero")
+    # a real value is untouched
+    assert settled(StatLine("Costs paid", f"{MINUS}17.43", "neg")).tone == "neg"
+
+
+def test_pnl_trend_is_flat_while_the_pnl_prints_as_zero() -> None:
+    assert [pnl_trend(x) for x in (0.0, 0.004, -0.004, 0.005, -0.01)] == [
+        "flat",
+        "flat",
+        "flat",
+        "up",
+        "down",
+    ]
+    assert pnl_tag(0.0) == "up"  # React
+
+
+def test_ticket_cost_view() -> None:
+    assert ticket_cost_view(TicketPreview("price", 174.27, 17.427)) == (f"cost {MINUS}17.43", "neg")
+    # a far out-of-the-money option: price 0.00, cost 0.00 (React: "cost −0.00" in red)
+    assert ticket_cost_view(TicketPreview("price", 1e-9, 1e-11)) == ("cost 0.00", "zero")
+    assert ticket_cost_view(TicketPreview("price", 0.0, 0.0)) == ("cost 0.00", "zero")
+
+
+def test_grouped_replay_caption_does_not_read_as_a_year() -> None:
+    assert grouped_replay_caption(2010) == (
+        "Undisclosed slice of real S&P 500 / VIX history (2,010 days on file)."
+    )
+    assert replay_caption(2010).endswith("(2010 days on file).")  # React
+
+
+def test_book_units_follow_the_book_rows_and_the_currency() -> None:
+    rows = book_rows(greeks(), 0.0)
+    units = book_units("USD")
+    assert len(units) == len(rows)
+    assert units == [
+        "per $1 spot",
+        "Δdelta per $1 spot",
+        "per 1 vol pt",
+        "per day",
+        "index units",
+    ]
+    assert book_units("EUR")[0] == "per €1 spot"
+
+
+def test_tick_theta_caption() -> None:
+    assert tick_theta_caption(1 / 252) == (
+        "Theta is per calendar day; a Tick is one trading day (1/252 y ≈ 1.45 calendar days), "
+        "so a Tick's theta P&L ≈ 1.45 × Theta."
+    )
+
+
+def test_a_ticks_theta_pnl_is_365_dt_times_the_book_theta() -> None:
+    """What the caption claims, on the engine: one Tick's theta term of the P&L explain is
+    the book's (per calendar day) Theta × 365·dt, 1.45 with dt = 1/252."""
+    desk = fresh()
+    desk.request_rfq()
+    desk.quote(0.05, 0.0)
+    s = desk.state
+    theta_per_day = book_greeks(s.book, s.market).reported.theta
+    assert theta_per_day != 0
+    desk.tick()
+    dt = desk.cfg.params.dt
+    assert dt == pytest.approx(1 / 252)
+    assert desk.state.cum_attr.theta == pytest.approx(theta_per_day * 365 * dt, rel=1e-12)
+    assert 365 * dt == pytest.approx(1.448, abs=1e-3)
+
+
+def test_flatten_instruments_names_the_hedge_of_each_button() -> None:
+    assert flatten_instruments() == "Δ trades the index future; vega and Γ trade a 60-day ATM call."

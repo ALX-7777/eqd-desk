@@ -14,7 +14,10 @@ draw order) and every step must match:
 - the STATE: day, stats, selection, the RFQ queue, the fill line, the market, the book
   (cash, hedge, edge, costs, trades), the cumulative P&L explain and the whole history;
 - the SCREEN: every label, number and tone the panels show, built by
-  :mod:`eqd_desk.app.ui.simulator_display` (so the Streamlit page shows the React strings).
+  :mod:`eqd_desk.app.ui.simulator_display` (so the Streamlit page shows the React strings,
+  apart from the few deliberate fixes that module's last section applies on top of them at
+  render time, such as no minus sign or red on a zero; those are tested on their own in
+  ``test_simulator_display.py``).
 
 Tolerances: integers, labels and messages exactly; floats through exp/log with a relative
 1e-9 and a money floor of 1e-6 (books reach ~1e6 in cash, so cancellation leaves ~1e-10).
@@ -30,14 +33,13 @@ from typing import Any
 
 import pytest
 
-from eqd_desk.app.ui.format import fmt_signed_money, js_round, sign_class
+from eqd_desk.app.ui.format import fmt_signed_money, js_number, js_round, sign_class
 from eqd_desk.app.ui.sim_session import (
     MAX_QUEUE,
     SimSession,
     Ticket,
     default_ticket,
     desk_config,
-    js_number,
     quote_preview,
     ticket_from_plan,
     ticket_preview,

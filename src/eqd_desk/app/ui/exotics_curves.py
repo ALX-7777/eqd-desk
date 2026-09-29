@@ -11,11 +11,15 @@ React views (``web/src/components/exotics/*View.tsx``), so both apps print the s
 - the small derived numbers of the readouts (% of vanilla, the knock-in + knock-out =
   vanilla parity, the detail lines under each hero number).
 
-Beyond the React views: the barrier and the digital expose r and q; the digital can pay the
-asset instead of cash (asset-or-nothing = vanilla call + K cash digitals, replicated with
-spreads the same way); the variance swap's skew can be switched off (a flat smile prices
-variance at the ATM vol) and its strip's strike range and count are controls. At the
-defaults (cash payout, skew on, the engine's strip) every number is the React one.
+Beyond the React views: the barrier and the digital expose r and q; the barrier kind is
+picked as a direction and a knock, and a barrier switched to the other side of spot is
+mirrored there (:func:`reflected_barrier`) instead of starting out breached
+(:func:`barrier_status`); the digital can pay the asset instead of cash (asset-or-nothing =
+vanilla call + K cash digitals, replicated with spreads the same way); the autocallable's
+chips leave out the gamma it does not report (:data:`METRIC_CHIPS`); the variance swap's
+skew can be switched off (a flat smile prices variance at the ATM vol) and its strip's
+strike range and count are controls. At the defaults (cash payout, skew on, the engine's
+strip) every number is the React one.
 
 Every sweep is evaluated on :func:`~eqd_desk.app.ui.charts.sweep_x` points (React's
 ``lo + ((hi − lo)·i)/N``), so each value is bit-identical to the React chart's. Checked
@@ -36,9 +40,17 @@ from typing import Final, Literal
 
 import pandas as pd
 
+from eqd_desk.app.ui.bounds import (
+    DIV_BOUNDS,
+    RATE_BOUNDS,
+    SPOT_RANGE_FACTORS,
+    Bounds,
+    listed_strike_step,
+)
 from eqd_desk.app.ui.charts import sweep_x
-from eqd_desk.app.ui.format import fmt_money, fmt_num, js_round, to_fixed
-from eqd_desk.content import ExoticKind, ExoticMetric
+from eqd_desk.app.ui.format import fmt_money, fmt_num, js_number, js_round, to_fixed
+from eqd_desk.app.ui.units import axis_title
+from eqd_desk.content import EXOTIC_METRICS, ExoticKind, ExoticMetric
 from eqd_desk.data import MarketSnapshot
 from eqd_desk.engine import BsmInputs, OptionType, analyze_option
 from eqd_desk.engine import price as vanilla_price
@@ -64,30 +76,9 @@ from eqd_desk.engine.exotics import (
     price_variance_swap,
     simulate_obs_paths,
 )
+from eqd_desk.engine.presets import round_to
 
 # ------------------------------------------------------------------ shared
-
-
-@dataclass(frozen=True, slots=True)
-class Bounds:
-    """Range and increment of one slider (React ``LabeledSlider`` ``min`` / ``max`` /
-    ``step``)."""
-
-    lo: float
-    hi: float
-    step: float
-
-
-def listed_step(spot: float) -> float:
-    """The index's listed-strike grid in points: 25 above 2,000 (SPX, SX5E), else 5 (React
-    ``const step = snapshot.spot >= 2000 ? 25 : 5``)."""
-    return 25.0 if spot >= 2000 else 5.0
-
-
-def to_grid(x: float, step: float) -> float:
-    """``x`` rounded to the nearest multiple of ``step`` (React ``Math.round(x / step) *
-    step``, ties toward +∞)."""
-    return js_round(x / step) * step
 
 
 def metric_value(values: ExoticGreeks, metric: ExoticMetric) -> float:
@@ -97,10 +88,6 @@ def metric_value(values: ExoticGreeks, metric: ExoticMetric) -> float:
 
 VOL_BOUNDS: Final = Bounds(0.05, 0.8, 0.0025)
 """σ slider of the barrier and the digital (decimal vol)."""
-RATE_BOUNDS: Final = Bounds(-0.02, 0.1, 0.0005)
-"""r slider (the greeks lab's range)."""
-DIV_BOUNDS: Final = Bounds(0.0, 0.06, 0.0005)
-"""q slider (the greeks lab's range)."""
 
 PRICED_READOUT_KEYS: Final[tuple[ExoticMetric, ...]] = ("delta", "gamma", "vega", "theta", "rho")
 """Greek rows under the barrier's and the digital's premium."""
@@ -113,12 +100,111 @@ DEFAULT_METRIC: Final[Mapping[ExoticKind, ExoticMetric]] = MappingProxyType(
 """The metric each view opens on (React ``useState<ExoticMetric>(…)``); the variance swap
 has none (it shows no greeks)."""
 
+METRIC_CHIPS: Final[Mapping[ExoticKind, tuple[ExoticMetric, ...]]] = MappingProxyType(
+    {
+        "barrier": EXOTIC_METRICS,
+        "digital": EXOTIC_METRICS,
+        "autocall": ("price", *AUTOCALL_READOUT_KEYS),
+        "varswap": (),
+    }
+)
+"""The price & greek chips of each view's Learn panel: every metric for the closed-form
+exotics; the autocallable leaves out the gamma it does not report (React offers it, with
+nothing to show); the variance swap has no chips."""
+
 # ------------------------------------------------------------------ barrier
 
 BARRIER_KIND_LABELS: Final[Mapping[BarrierKind, str]] = MappingProxyType(
     {"down-out": "Down-out", "down-in": "Down-in", "up-out": "Up-out", "up-in": "Up-in"}
 )
-"""The barrier-kind segments, in React order (BarrierView ``KINDS``)."""
+"""Display name of each barrier kind, in React order (BarrierView ``KINDS``): the chart
+legend and the knock-in + knock-out rows."""
+
+BarrierDirection = Literal["down", "up"]
+"""Which side of spot the barrier sits on: below (down) or above (up)."""
+BarrierKnock = Literal["out", "in"]
+"""What touching the barrier does: kill the option (out) or switch it on (in)."""
+
+BARRIER_DIRECTION_LABELS: Final[Mapping[BarrierDirection, str]] = MappingProxyType(
+    {"down": "Down", "up": "Up"}
+)
+"""The direction segments (the React kind picker, split in two)."""
+BARRIER_KNOCK_LABELS: Final[Mapping[BarrierKnock, str]] = MappingProxyType(
+    {"out": "Out", "in": "In"}
+)
+"""The knock segments (the React kind picker, split in two)."""
+
+_KIND_OF: Final[Mapping[tuple[BarrierDirection, BarrierKnock], BarrierKind]] = MappingProxyType(
+    {
+        ("down", "out"): "down-out",
+        ("down", "in"): "down-in",
+        ("up", "out"): "up-out",
+        ("up", "in"): "up-in",
+    }
+)
+_SIDES_OF: Final[Mapping[BarrierKind, tuple[BarrierDirection, BarrierKnock]]] = MappingProxyType(
+    {kind: sides for sides, kind in _KIND_OF.items()}
+)
+
+
+def barrier_kind(direction: BarrierDirection, knock: BarrierKnock) -> BarrierKind:
+    """The engine's barrier kind of a direction and a knock (``"down"``, ``"out"`` →
+    ``"down-out"``)."""
+    return _KIND_OF[direction, knock]
+
+
+def barrier_sides(kind: BarrierKind) -> tuple[BarrierDirection, BarrierKnock]:
+    """The direction and the knock of a barrier kind (``"up-in"`` → ``("up", "in")``)."""
+    return _SIDES_OF[kind]
+
+
+def barrier_breached(S: float, H: float, direction: BarrierDirection) -> bool:
+    """Is spot already at or beyond the barrier? The engine's test
+    (:func:`~eqd_desk.engine.exotics.barrier_price`): a down barrier at or above spot, an up
+    barrier at or below it. A breached knock-out is dead (0); a breached knock-in is the
+    vanilla."""
+    return S <= H if direction == "down" else S >= H
+
+
+BarrierStatus = Literal["live", "breached", "strike_beyond"]
+"""Whether the barrier still matters: ``"live"``; ``"breached"`` (spot at or beyond H: the
+knock-out is dead, the knock-in is the vanilla); ``"strike_beyond"`` (an up call struck at or
+above H, or a down put struck at or below it: the option can only finish in the money after
+crossing H, so the knock-out is worth nothing and the knock-in is the vanilla)."""
+
+
+def barrier_status(i: BarrierInputs) -> BarrierStatus:
+    """The :data:`BarrierStatus` of a barrier option (breached takes precedence)."""
+    direction, _ = barrier_sides(i.kind)
+    if barrier_breached(i.S, i.H, direction):
+        return "breached"
+    if (direction == "up" and i.type == "call" and i.K >= i.H) or (
+        direction == "down" and i.type == "put" and i.K <= i.H
+    ):
+        return "strike_beyond"
+    return "live"
+
+
+def reflected_barrier(
+    S: float, H: float, direction: BarrierDirection, bounds: Bounds, step: float
+) -> float:
+    """Barrier H after the direction is switched to ``direction``.
+
+    Unchanged if H already sits on that side of spot. Otherwise H would start out breached
+    (a down barrier moved to "up" is below spot), so it is mirrored through spot in log
+    terms, H → S²/H (ln(H/S) changes sign: about the same distance on the other side),
+    rounded to the listed-strike grid ``step``, kept strictly beyond spot and within the
+    slider's ``bounds``. With S = 6,312.45 on a 25-point grid: 5,675 ↔ 7,025.
+    """
+    if not barrier_breached(S, H, direction):
+        return H
+    h = round_to(S * S / H, step)
+    if direction == "up" and h <= S:
+        h = (math.floor(S / step) + 1) * step
+    elif direction == "down" and h >= S:
+        h = (math.ceil(S / step) - 1) * step
+    return min(max(h, bounds.lo), bounds.hi)
+
 
 BARRIER_CHART_METRICS: Final[tuple[ExoticMetric, ...]] = ("price", "delta", "gamma", "vega")
 """Metrics offered by the barrier chart's own selector."""
@@ -133,16 +219,16 @@ BARRIER_SWEEP: Final = (0.55, 1.45, 120)
 def barrier_seed(snap: MarketSnapshot) -> BarrierInputs:
     """The barrier view's opening inputs: a 6-month down-and-out call struck at the money
     (K = spot on the strike grid) with the barrier 10% below, at the snapshot's vol."""
-    step = listed_step(snap.spot)
+    step = listed_strike_step(snap.spot)
     return BarrierInputs(
         S=snap.spot,
-        K=to_grid(snap.spot, step),
+        K=round_to(snap.spot, step),
         T=0.5,
         r=snap.r,
         q=snap.q,
         sigma=snap.atm_vol_30d,
         type="call",
-        H=to_grid(snap.spot * 0.9, step),
+        H=round_to(snap.spot * 0.9, step),
         kind="down-out",
     )
 
@@ -150,15 +236,15 @@ def barrier_seed(snap: MarketSnapshot) -> BarrierInputs:
 def level_bounds(spot: float, lo_mult: float, hi_mult: float) -> Bounds:
     """A spot / strike / barrier slider: ``lo_mult``…``hi_mult`` × spot, both ends on the
     strike grid, moving in fifths of it (React ``round(spot·m)``, ``step / 5``)."""
-    step = listed_step(spot)
-    return Bounds(to_grid(spot * lo_mult, step), to_grid(spot * hi_mult, step), step / 5)
+    step = listed_strike_step(spot)
+    return Bounds(round_to(spot * lo_mult, step), round_to(spot * hi_mult, step), step / 5)
 
 
 def barrier_bounds(spot: float) -> dict[str, Bounds]:
     """Slider bounds of the barrier view, keyed by input name (S, K, H, T, sigma, r, q)."""
     return {
-        "S": level_bounds(spot, 0.6, 1.4),
-        "K": level_bounds(spot, 0.6, 1.4),
+        "S": level_bounds(spot, *SPOT_RANGE_FACTORS),
+        "K": level_bounds(spot, *SPOT_RANGE_FACTORS),
         "H": level_bounds(spot, 0.5, 1.5),
         "T": BARRIER_T_BOUNDS,
         "sigma": VOL_BOUNDS,
@@ -279,7 +365,7 @@ def digital_seed(snap: MarketSnapshot) -> DigitalInputs:
     at the money (on the strike grid), at the snapshot's vol."""
     return DigitalInputs(
         S=snap.spot,
-        K=to_grid(snap.spot, listed_step(snap.spot)),
+        K=round_to(snap.spot, listed_strike_step(snap.spot)),
         T=0.25,
         r=snap.r,
         q=snap.q,
@@ -291,22 +377,22 @@ def digital_seed(snap: MarketSnapshot) -> DigitalInputs:
 
 def digital_width_seed(spot: float) -> float:
     """Opening call-spread width Δ: 2% of spot on the strike grid."""
-    return to_grid(spot * 0.02, listed_step(spot))
+    return round_to(spot * 0.02, listed_strike_step(spot))
 
 
 def digital_bounds(spot: float) -> dict[str, Bounds]:
     """Slider bounds of the digital view, keyed by input name (S, K, T, sigma, r, q, cash,
     width)."""
-    step = listed_step(spot)
+    step = listed_strike_step(spot)
     return {
-        "S": level_bounds(spot, 0.6, 1.4),
-        "K": level_bounds(spot, 0.6, 1.4),
+        "S": level_bounds(spot, *SPOT_RANGE_FACTORS),
+        "K": level_bounds(spot, *SPOT_RANGE_FACTORS),
         "T": DIGITAL_T_BOUNDS,
         "sigma": VOL_BOUNDS,
         "r": RATE_BOUNDS,
         "q": DIV_BOUNDS,
         "cash": DIGITAL_CASH_BOUNDS,
-        "width": Bounds(step / 5, to_grid(spot * 0.1, step), step / 5),
+        "width": Bounds(step / 5, round_to(spot * 0.1, step), step / 5),
     }
 
 
@@ -314,10 +400,16 @@ DigitalPayout = Literal["cash", "asset"]
 """What an in-the-money digital pays at expiry: a fixed cash amount Q (cash-or-nothing, the
 React view) or the asset itself, S_T (asset-or-nothing)."""
 
-DIGITAL_PAYOUT_LABELS: Final[Mapping[DigitalPayout, str]] = MappingProxyType(
+DIGITAL_PAYOUT_NAMES: Final[Mapping[DigitalPayout, str]] = MappingProxyType(
     {"cash": "Cash-or-nothing", "asset": "Asset-or-nothing"}
 )
-"""The payout segments, cash first (the React view's only payout)."""
+"""The full name of each payout (the chart legend; the payout control's tooltip)."""
+
+DIGITAL_PAYOUT_LABELS: Final[Mapping[DigitalPayout, str]] = MappingProxyType(
+    {"cash": "Cash", "asset": "Asset"}
+)
+"""The payout segments, cash first (the React view's only payout): short, so the two sit
+side by side in the narrow controls column."""
 
 
 def digital_price(i: DigitalInputs, payout: DigitalPayout = "cash") -> float:
@@ -457,7 +549,7 @@ def digital_series_labels(option: OptionType, payout: DigitalPayout) -> tuple[st
     if payout == "cash":
         return f"{option.capitalize()} spread", "Digital"
     spreads = "Vanilla + call spreads" if option == "call" else "Put spreads − vanilla"
-    return spreads, DIGITAL_PAYOUT_LABELS["asset"]
+    return spreads, DIGITAL_PAYOUT_NAMES["asset"]
 
 
 def replication_recipe(i: DigitalInputs, width: float, payout: DigitalPayout) -> str:
@@ -864,15 +956,11 @@ def varswap_data(c: VarSwapControls, *, S: float, r: float, q: float) -> VarSwap
 # ------------------------------------------------------------------ display helpers
 
 
-def js_number(v: float) -> str:
-    """A number as JavaScript's template literal prints it: ``3``, ``2.5``, ``100``."""
-    return str(int(v)) if float(v).is_integer() and abs(v) < 1e21 else repr(float(v))
-
-
-def metric_axis_title(label: str, unit: str, currency: str, metric: ExoticMetric) -> str:
+def metric_axis_title(metric: ExoticMetric, currency: str) -> str:
     """Y-axis title of a metric chart: ``Value (USD)`` for the price, else the greek and its
-    desk unit (``Gamma (Δdelta per $1 spot)``)."""
-    return f"Value ({currency})" if metric == "price" else f"{label} ({unit})"
+    desk unit (``Gamma (Δdelta per $1 spot)``): the shared
+    :func:`~eqd_desk.app.ui.units.axis_title`, the price called "Value"."""
+    return axis_title(metric, currency, price_label="Value")
 
 
 def years_display(v: float) -> str:
@@ -883,3 +971,101 @@ def years_display(v: float) -> str:
 def maturity_display(v: float) -> str:
     """A maturity as ``3 y`` / ``2.5 y`` (React ``${maturity} y``)."""
     return f"{js_number(v)} y"
+
+
+__all__ = [
+    "AUTOCALL_GREEK_PATHS",
+    "AUTOCALL_NOTIONAL",
+    "AUTOCALL_PRICE_PATHS",
+    "AUTOCALL_READOUT_KEYS",
+    "BARRIER_CHART_METRICS",
+    "BARRIER_COMPLEMENT",
+    "BARRIER_DIRECTION_LABELS",
+    "BARRIER_KIND_LABELS",
+    "BARRIER_KNOCK_LABELS",
+    "BARRIER_SWEEP",
+    "BARRIER_T_BOUNDS",
+    "DEFAULT_METRIC",
+    "DIGITAL_CASH_BOUNDS",
+    "DIGITAL_CHART_METRICS",
+    "DIGITAL_PAYOUT_LABELS",
+    "DIGITAL_PAYOUT_NAMES",
+    "DIGITAL_SWEEP",
+    "DIGITAL_T_BOUNDS",
+    "METRIC_CHIPS",
+    "PRICED_READOUT_KEYS",
+    "SAMPLE_PATHS",
+    "SAMPLE_SEED",
+    "SAMPLE_STEPS",
+    "SKEW_SWEEP_POINTS",
+    "SMILE_MIN_SPAN",
+    "STRIP_EVERY",
+    "VARSWAP_VOL_FLOOR",
+    "VOL_BOUNDS",
+    "AssetDecomposition",
+    "AutocallData",
+    "AutocallLevels",
+    "BarrierData",
+    "BarrierDirection",
+    "BarrierKnock",
+    "BarrierParity",
+    "BarrierStatus",
+    "DigitalData",
+    "DigitalPayout",
+    "VarSwapControls",
+    "VarSwapData",
+    "VarSwapView",
+    "asset_decomposition",
+    "autocall_bounds",
+    "autocall_data",
+    "autocall_detail",
+    "autocall_levels",
+    "autocall_seed",
+    "autocall_spot_display",
+    "autocall_value_label",
+    "barrier_bounds",
+    "barrier_breached",
+    "barrier_curve",
+    "barrier_data",
+    "barrier_kind",
+    "barrier_parity",
+    "barrier_seed",
+    "barrier_sides",
+    "barrier_status",
+    "digital_bounds",
+    "digital_curve",
+    "digital_data",
+    "digital_detail",
+    "digital_price",
+    "digital_seed",
+    "digital_series_labels",
+    "digital_width_seed",
+    "forward_level",
+    "level_bounds",
+    "maturity_display",
+    "mc_badge",
+    "metric_axis_title",
+    "metric_value",
+    "observation_times",
+    "payout_amount",
+    "payout_greeks",
+    "pct_of_vanilla",
+    "price_varswap",
+    "reflected_barrier",
+    "replication_price",
+    "replication_recipe",
+    "sample_paths",
+    "skew_effect",
+    "skew_slopes",
+    "smile",
+    "spread_convergence",
+    "strip_frame",
+    "vanilla_inputs",
+    "vanilla_metric",
+    "varswap_bounds",
+    "varswap_data",
+    "varswap_seed",
+    "vol_axis_domain",
+    "width_grid",
+    "years_display",
+]
