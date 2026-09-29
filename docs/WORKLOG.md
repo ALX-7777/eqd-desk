@@ -297,3 +297,41 @@ Sign convention for time greeks: `∂/∂t = −∂/∂T` (a long option bleeds 
   options, then `hedgeToFlat` for exact delta). Shown when both vega & gamma are exposed. +1 test
   (`combined hedge flattens delta, gamma and vega together` — applies the legs, asserts all three
   net greeks ≈ 0). **215 tests green**, build OK. Verified by screenshot on a short-straddle book.
+
+---
+
+## Python / Streamlit port (2026-09-27 → 2026-09-29)
+
+The app now has a second, primary front-end: the `eqd_desk` Python package (uv, src layout)
+with a Streamlit UI, packaged for Docker, `uvx` and Streamlit Community Cloud. The React app
+moved to `web/` unchanged and stays the reference implementation.
+
+- **Engine port** (`src/eqd_desk/engine`): BSM, all greeks, reporting, strategies/presets,
+  exotics (barriers, digitals, variance swap, Phoenix autocallable), simulator (market, RFQs,
+  quoting, book, P&L attribution, replay, advisor). The seeded RNG (mulberry32 + Marsaglia
+  polar) is a bit-exact port, scalar and numpy-vectorised.
+- **Verification**: every TS test ported; finite-difference checks for every greek;
+  Hypothesis no-arbitrage properties; **golden parity**: `web/scripts/golden/*.golden.ts` export
+  the TS engine's outputs to `tests/parity/golden/`, and the Python engine must reproduce them
+  (≈1e-10). The simulator session layer is golden-tested against the real `<SimulatorView/>`
+  driven in jsdom. CI regenerates the goldens and fails if they drift.
+- **UI** (`src/eqd_desk/app`): `st.navigation` pages (overview, greeks lab, strategy builder,
+  exotics, simulator), shared Altair chart/input helpers, teaching text verbatim from
+  `eqd_desk.content`. Default numbers equal the React app's exactly. Built by parallel agents,
+  each visually verified with Playwright against React screenshots; then five independent QA
+  reviews (numbers, UX, simulator stress, code quality, packaging): 70 findings, all but two
+  minor ones fixed (incl. a trade-ticket crash on an iron condor at max wing, advisor dialog
+  misbehaving under Auto, readout clipping at laptop widths).
+- **Engine changes made in BOTH engines** (goldens regenerated):
+  - *Vol-of-vol is now proportional* (`ν·σ·√dt·z`, was `ν·√dt·z`): the absolute noise
+    (≈±3.8 vol pts/day) swamped the leverage effect and parked vol on its 5% floor; now ≈0.55
+    pt/day of noise, daily |Δvol| ≈1.1 pt and spot/vol correlation ≈−0.85 (real ^GSPC/^VIX
+    2018–26: 0.75 pt, −0.79). Approved by the user.
+  - *Variance swap*: trapezoid end weights plus an Euler–Maclaurin correction for the
+    put/call kink at the forward (a flat 5% smile at 7 days used to price 4.80%).
+  - Advisor text: signed dollars print as `-$644`, not `$-644`.
+- **Known limitations** (open): expired simulator trades are never settled (re-marked at
+  T = 1e-6, which makes one-day gamma terms huge and the residual cancels them); the static
+  seed's 30-day term-structure knot (13.9%) disagrees with its VIX anchor (14.6%); the seed
+  snapshot is a placeholder until `fetch_snapshot.py` is run; some test helpers are duplicated
+  across UI test modules.
