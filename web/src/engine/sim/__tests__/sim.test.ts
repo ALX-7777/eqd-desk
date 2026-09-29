@@ -66,6 +66,43 @@ describe('market simulation', () => {
     }
   })
 
+  it('vol-of-vol noise is proportional to the vol level (a true vol of vol)', () => {
+    const p = { ...DEFAULT_SIM_PARAMS, leverage: 0, volMeanRev: 0 }
+    const calm = gbmLeverageProcess.step(m0, p, fixedNormal([0.3, 1]))
+    const stressed = gbmLeverageProcess.step({ ...m0, atmVol: 0.4 }, p, fixedNormal([0.3, 1]))
+    expect(calm.dVol).toBeCloseTo(p.volOfVol * 0.2 * Math.sqrt(p.dt), 12)
+    expect(stressed.dVol).toBeCloseTo(2 * calm.dVol, 12)
+  })
+
+  it('default process: vol moves ~1 pt/day, against spot, and rarely touches the floor', () => {
+    // Regression: the noise used to be ABSOLUTE (ν·√dt·z2 ≈ 3.8 vol pts/day): ATM vol
+    // random-walked ~4 pts a day, sat on the 5% floor ~7% of days, corr(spot, vol) ≈ −0.47.
+    const start: MarketState = { t: 0, spot: 6312.45, atmVol: 0.146, r: 0.043, q: 0.013 }
+    const params = { ...DEFAULT_SIM_PARAMS, baseVol: 0.146 }
+    const dVol: number[] = []
+    const rets: number[] = []
+    let atFloor = 0
+    for (let seed = 0; seed < 60; seed++) {
+      const sim = new MarketSimulator(start, params, 1000 + seed)
+      for (let d = 0; d < 126; d++) {
+        const res = sim.next()
+        dVol.push(100 * res.dVol)
+        rets.push(res.spotReturn)
+        if (res.state.atmVol <= 0.05) atFloor++
+      }
+    }
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+    const mv = mean(dVol)
+    const mr = mean(rets)
+    const sdVol = Math.sqrt(mean(dVol.map((x) => (x - mv) ** 2)))
+    const sdRet = Math.sqrt(mean(rets.map((x) => (x - mr) ** 2)))
+    const corr = mean(dVol.map((x, k) => (x - mv) * (rets[k] - mr))) / (sdVol * sdRet)
+    expect(sdVol).toBeGreaterThan(0.8)
+    expect(sdVol).toBeLessThan(1.6)
+    expect(corr).toBeLessThan(-0.75)
+    expect(atFloor / dVol.length).toBeLessThan(0.01)
+  })
+
   it('realised vol is ~0 for a constant-return path and positive for a noisy one', () => {
     const flat = Array.from({ length: 20 }, (_, k) => 100 * Math.exp(0.001 * k))
     expect(realisedVol(flat, 1 / 252)).toBeCloseTo(0, 6)
@@ -301,6 +338,17 @@ describe('desk advisor', () => {
     const a = adviseBook(b, m0, 0.35) // realised 35% > implied 20%
     expect(a[0].severity).toBe('high')
     expect(a.some((x) => x.title.includes('Short gamma'))).toBe(true)
+  })
+
+  it('gamma plan text puts the sign before the currency', () => {
+    // Regression: it read "about $-644/vol-pt of vega and ~-61 delta".
+    const b: Book = { ...emptyBook(), trades: [{ id: 1, type: 'call', side: 'long', quantity: 200, K: 100, expiryTime: 0.25, tradedPrice: 0 }] }
+    const plan = adviseBook(b, m0, 0.1).find((x) => x.action === 'flatten-gamma')?.plan
+    expect(plan?.side).toBe('sell')
+    expect(plan?.rationale).toContain('It brings about -$')
+    expect(plan?.rationale).toContain('/vol-pt of vega and ≈ -')
+    expect(plan?.rationale).not.toContain('$-')
+    expect(plan?.rationale).not.toContain('~-')
   })
 
   it('actionable advice carries a concrete hedge plan', () => {

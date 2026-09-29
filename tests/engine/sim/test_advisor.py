@@ -24,7 +24,14 @@ from eqd_desk.engine.sim import (
     rfq_risk_impact,
     trade_option,
 )
-from eqd_desk.engine.sim.advisor import _js_round, _js_str, _money, _pct, _to_fixed
+from eqd_desk.engine.sim.advisor import (
+    _js_round,
+    _js_str,
+    _money,
+    _pct,
+    _signed_dollars,
+    _to_fixed,
+)
 from eqd_desk.engine.types import OptionType
 from tests.engine.sim.common import M0, close
 
@@ -191,6 +198,13 @@ def test_gamma_branches() -> None:
     assert item.severity == "low"
     assert item.plan is not None
     assert (item.plan.side, item.plan.tenor_days) == ("sell", 21)
+    # the sell-gamma plan brings SHORT vega and short delta: the sign sits before the "$"
+    # (regression: it read "about $-644/vol-pt of vega and ~-61 delta")
+    rationale = item.plan.rationale
+    assert "It brings about -$" in rationale
+    assert "/vol-pt of vega and ≈ -" in rationale
+    assert "$-" not in rationale
+    assert "~-" not in rationale
     # long gamma in a hot tape: nothing to flag on gamma
     assert not any(x.action == "flatten-gamma" for x in advise_book(long, M0, 0.5))
     # no realised vol yet ⇒ the gamma check is skipped
@@ -312,6 +326,21 @@ def test_money_matches_to_locale_string(x: float, expected: str) -> None:
 )
 def test_to_fixed_matches_js(x: float, digits: int, expected: str) -> None:
     assert _to_fixed(x, digits) == expected
+
+
+@pytest.mark.parametrize(
+    ("x", "expected"),
+    [
+        (643.7, "$644"),
+        (-643.7, "-$644"),
+        (-1234.5, "-$1,234"),  # Math.round: ties toward +∞
+        (1234.5, "$1,235"),
+        (-0.3, "$0"),  # rounds to −0: no sign
+        (0.0, "$0"),
+    ],
+)
+def test_signed_dollars_puts_the_sign_before_the_currency(x: float, expected: str) -> None:
+    assert _signed_dollars(x) == expected
 
 
 def test_pct_and_js_str() -> None:

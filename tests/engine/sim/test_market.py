@@ -1,10 +1,12 @@
 """Market simulation and the skew surface. Port of the ``market simulation`` and ``skew
 surface`` blocks of ``web/src/engine/sim/__tests__/sim.test.ts``, plus checks of the draw
-order (two normals per step) and the vol floor/cap."""
+order (two normals per step), the vol floor/cap, the proportional vol-of-vol and the
+default process's daily vol statistics."""
 
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import replace
 
 import pytest
@@ -92,7 +94,7 @@ def test_step_formula_and_bookkeeping() -> None:
         sigma
         - p.leverage * res.spot_return
         + p.vol_mean_rev * (p.base_vol - sigma) * p.dt
-        + p.vol_of_vol * math.sqrt(p.dt) * -1.3
+        + p.vol_of_vol * sigma * math.sqrt(p.dt) * -1.3
     )
     assert res.state.atm_vol == pytest.approx(vol, rel=1e-15)
     assert res.d_vol == pytest.approx(vol - sigma, rel=1e-12)
@@ -104,8 +106,44 @@ def test_step_formula_and_bookkeeping() -> None:
 
 def test_vol_is_clamped_at_floor_and_cap() -> None:
     p = replace(DEFAULT_SIM_PARAMS, vol_mean_rev=0)
-    assert gbm_leverage_process.step(M0, p, fixed_normal([0, -50])).state.atm_vol == VOL_FLOOR
-    assert gbm_leverage_process.step(M0, p, fixed_normal([0, 50])).state.atm_vol == VOL_CAP
+    assert gbm_leverage_process.step(M0, p, fixed_normal([0, -200])).state.atm_vol == VOL_FLOOR
+    assert gbm_leverage_process.step(M0, p, fixed_normal([0, 200])).state.atm_vol == VOL_CAP
+
+
+def test_vol_noise_is_proportional_to_the_vol_level() -> None:
+    """ν is a true vol-of-vol: the same shock moves a 40% market twice as many vol points as
+    a 20% one (leverage and mean-reversion switched off to isolate the noise)."""
+    p = replace(DEFAULT_SIM_PARAMS, leverage=0, vol_mean_rev=0)
+    calm = gbm_leverage_process.step(M0, p, fixed_normal([0.3, 1.0]))
+    stressed = gbm_leverage_process.step(replace(M0, atm_vol=0.4), p, fixed_normal([0.3, 1.0]))
+    assert calm.d_vol == pytest.approx(p.vol_of_vol * 0.2 * math.sqrt(p.dt), rel=1e-12)
+    assert stressed.d_vol == pytest.approx(2 * calm.d_vol, rel=1e-12)
+
+
+def test_default_process_moves_vol_about_a_point_a_day_against_spot() -> None:
+    """Regression: the noise used to be ABSOLUTE (ν·√dt·z2 ≈ 3.8 vol pts/day), so ATM vol
+    random-walked ~4 pts a day, sat on the 5% floor ~7% of the time and the spot/vol
+    correlation was only ≈ −0.47. Real ^GSPC/^VIX (2018–26): median |ΔVIX| 0.75 pt,
+    correlation −0.79. From the seeded 14.6% start over 60 seeds × 126 days the default
+    process now gives a daily move of ≈1.1 pt with the leverage effect dominating."""
+    start = MarketState(t=0, spot=6312.45, atm_vol=0.146, r=0.043, q=0.013)
+    params = replace(DEFAULT_SIM_PARAMS, base_vol=0.146)  # as the simulator seeds it
+    d_vol_pts: list[float] = []
+    returns: list[float] = []
+    at_floor = 0
+    for seed in range(60):
+        sim = MarketSimulator(start, params, 1000 + seed)
+        for _ in range(126):
+            res = sim.next()
+            d_vol_pts.append(100 * res.d_vol)
+            returns.append(res.spot_return)
+            at_floor += res.state.atm_vol <= VOL_FLOOR
+    abs_moves = sorted(abs(x) for x in d_vol_pts)
+    median_move = abs_moves[len(abs_moves) // 2]
+    assert 0.4 < median_move < 1.0
+    assert 0.8 < statistics.pstdev(d_vol_pts) < 1.6
+    assert statistics.correlation(returns, d_vol_pts) < -0.75
+    assert at_floor / len(d_vol_pts) < 0.01
 
 
 def test_realised_vol_matches_population_std_of_log_returns() -> None:

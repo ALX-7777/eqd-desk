@@ -1,9 +1,10 @@
 """Simulated market for the trading simulator.
 
 A GBM spot path with the ATM vol moving AGAINST spot (the leverage effect) plus mild
-mean-reversion and vol-of-vol noise. The book is priced off this single ATM vol (a flat
-surface that shifts, optionally tilted by a quadratic skew), which keeps the P&L
-attribution clean while still letting spot and vol co-move so vanna bites.
+mean-reversion and proportional (lognormal-style) vol-of-vol noise. The book is priced off
+this single ATM vol (a flat surface that shifts, optionally tilted by a quadratic skew),
+which keeps the P&L attribution clean while still letting spot and vol co-move so vanna
+bites.
 
 The step is written behind a small interface (:class:`MarketProcess`) so a Heston-style
 spot+vol process can drop in later without touching the rest of the simulator.
@@ -95,7 +96,8 @@ class SimParams:
     base_vol: float
     """Long-run vol level (decimal)."""
     vol_of_vol: float
-    """Vol-of-vol (idiosyncratic vol noise, annualised)."""
+    """Vol-of-vol: annualised volatility of the idiosyncratic vol noise, PROPORTIONAL to the
+    vol level (0.6 ⇒ the ATM vol's own noise is 60%/yr of itself: ≈0.55 vol pt/day at 14.6%)."""
     dt: float
     """Step size in years (1/252 ≈ one trading day)."""
 
@@ -123,7 +125,9 @@ DEFAULT_SIM_PARAMS: Final = SimParams(
     dt=1 / 252,
 )
 """Default process: no drift, leverage 1, vol mean-reverting to 15% with 60% vol-of-vol,
-one trading day per step."""
+one trading day per step. At a 14.6% ATM vol that is ≈0.9 vol pt/day of leverage-driven move
+plus ≈0.55 pt/day of noise: a daily vol change of ≈1.1 pt with a spot/vol correlation of about
+−0.85 (real ^GSPC/^VIX 2018–26: median |ΔVIX| 0.75 pt, correlation −0.79)."""
 
 
 class MarketProcess(Protocol):
@@ -143,8 +147,13 @@ class GbmLeverageProcess:
         ret     = (μ − σ²/2)·dt + σ·√dt·z1          σ = the current ATM vol
         S'      = S·e^ret
         R       = S'/S − 1                          the step's spot return
-        σ'      = σ − leverage·R + κ·(σ̄ − σ)·dt + ν·√dt·z2
+        σ'      = σ − leverage·R + κ·(σ̄ − σ)·dt + ν·σ·√dt·z2
         σ'      = clamp(σ', VOL_FLOOR, VOL_CAP)
+
+    The noise term is PROPORTIONAL to σ (an Euler step of dσ = … + ν·σ·dW), so ν is a true
+    "vol of vol": a calm 12% market jitters less, in vol points, than a stressed 40% one, and
+    the leverage term (−leverage·R) dominates the daily vol change, so spot and vol visibly
+    move against each other.
 
     Stateless: the shared instance :data:`gbm_leverage_process` is all you need.
     """
@@ -164,7 +173,7 @@ class GbmLeverageProcess:
             state.atm_vol
             - params.leverage * spot_return
             + params.vol_mean_rev * (params.base_vol - state.atm_vol) * params.dt
-            + params.vol_of_vol * math.sqrt(params.dt) * z2
+            + params.vol_of_vol * state.atm_vol * math.sqrt(params.dt) * z2
         )
         new_vol = min(VOL_CAP, max(VOL_FLOOR, new_vol))
 

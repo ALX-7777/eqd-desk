@@ -1,7 +1,7 @@
 /**
  * Simulated market for the trading simulator. A GBM spot path with the ATM vol
  * moving AGAINST spot (the leverage effect) plus mild mean-reversion and
- * vol-of-vol noise. The book is priced off this single ATM vol — a flat surface
+ * proportional (lognormal-style) vol-of-vol noise. The book is priced off this single ATM vol — a flat surface
  * that shifts — which keeps the P&L attribution clean while still letting spot
  * and vol co-move so vanna bites.
  *
@@ -50,7 +50,11 @@ export interface SimParams {
   volMeanRev: number
   /** Long-run vol level. */
   baseVol: number
-  /** Vol-of-vol (idiosyncratic vol noise). */
+  /**
+   * Vol-of-vol: annualised volatility of the idiosyncratic vol noise, PROPORTIONAL
+   * to the vol level (0.6 ⇒ the ATM vol's own noise is 60%/yr of itself: ≈0.55 vol
+   * pt/day at 14.6%).
+   */
   volOfVol: number
   /** Step size in years (1/252 ≈ one trading day). */
   dt: number
@@ -66,6 +70,13 @@ export interface StepResult {
   spotReturn: number
 }
 
+/**
+ * Default process: no drift, leverage 1, vol mean-reverting to 15% with 60%
+ * vol-of-vol, one trading day per step. At a 14.6% ATM vol that is ≈0.9 vol pt/day
+ * of leverage-driven move plus ≈0.55 pt/day of noise: a daily vol change of ≈1.1 pt
+ * with a spot/vol correlation of about −0.85 (real ^GSPC/^VIX 2018–26: median
+ * |ΔVIX| 0.75 pt, correlation −0.79).
+ */
 export const DEFAULT_SIM_PARAMS: SimParams = {
   drift: 0,
   leverage: 1.0,
@@ -83,7 +94,18 @@ export interface MarketProcess {
   step(state: MarketState, params: SimParams, normal: () => number): StepResult
 }
 
-/** GBM spot with leverage-linked vol. */
+/**
+ * GBM spot with leverage-linked vol. Consumes exactly TWO normals per step, in
+ * this order: z1 drives spot, z2 drives the idiosyncratic vol noise:
+ *
+ *   ret = (μ − σ²/2)·dt + σ·√dt·z1        σ = the current ATM vol
+ *   S'  = S·e^ret,  R = S'/S − 1
+ *   σ'  = clamp(σ − leverage·R + κ·(σ̄ − σ)·dt + ν·σ·√dt·z2, VOL_FLOOR, VOL_CAP)
+ *
+ * The noise is PROPORTIONAL to σ (an Euler step of dσ = … + ν·σ·dW), so ν is a
+ * true "vol of vol" and the leverage term dominates the daily vol change: spot
+ * and vol visibly move against each other.
+ */
 export const gbmLeverageProcess: MarketProcess = {
   step(state, params, normal) {
     const z1 = normal()
@@ -97,7 +119,7 @@ export const gbmLeverageProcess: MarketProcess = {
       state.atmVol -
       params.leverage * spotReturn +
       params.volMeanRev * (params.baseVol - state.atmVol) * params.dt +
-      params.volOfVol * Math.sqrt(params.dt) * z2
+      params.volOfVol * state.atmVol * Math.sqrt(params.dt) * z2
     newVol = Math.min(VOL_CAP, Math.max(VOL_FLOOR, newVol))
 
     return {

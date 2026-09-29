@@ -104,6 +104,13 @@ def _money(x: float) -> str:
     return f"{int(v):,}"
 
 
+def _signed_dollars(x: float) -> str:
+    """A signed dollar amount with the sign BEFORE the currency (``-$644``, ``$1,235``):
+    JS ``(v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US')``, v = Math.round(x)."""
+    v = _js_round(x)
+    return f"{'-' if v < 0 else ''}${_money(abs(v))}"
+
+
 def _to_fixed(x: float, digits: int) -> str:
     """JS ``x.toFixed(digits)``: round the EXACT binary value to ``digits`` decimals, ties
     away from zero; negative numbers keep their "-" even when they round to zero
@@ -369,8 +376,8 @@ def advise_book(
                     "Gamma concentrates in SHORT-dated at-the-money options, so a ~21-day "
                     "ATM option flattens gamma with the least vega baggage. "
                     f"{'Buy' if buy else 'Sell'} ≈ {_money(n)} ATM {atm_k_str} "
-                    f"call{'s' if n >= 2 else ''}. It brings about ${_money(signed_vega)}"
-                    f"/vol-pt of vega and ~{_money(signed_delta)} delta — re-hedge that "
+                    f"call{'s' if n >= 2 else ''}. It brings about {_signed_dollars(signed_vega)}"
+                    f"/vol-pt of vega and ≈ {_money(signed_delta)} delta — re-hedge that "
                     "delta with the future."
                 ),
             )

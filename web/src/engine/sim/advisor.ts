@@ -39,6 +39,11 @@ export interface Advice {
 
 const RANK: Record<Severity, number> = { high: 0, medium: 1, low: 2, ok: 3 }
 const money = (x: number) => Math.round(x).toLocaleString('en-US')
+/** A signed dollar amount with the sign BEFORE the currency: -$644, $1,235. */
+const signedDollars = (x: number) => {
+  const v = Math.round(x)
+  return `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString('en-US')}`
+}
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`
 
 /** How winning an RFQ (you take the opposite side) would move your net risk. */
@@ -165,7 +170,7 @@ export function adviseBook(
     const signedDelta = (buy ? 1 : -1) * n * lg.delta
     const gammaPlan: HedgePlan | undefined = n > 0 ? {
       instrument: 'option', optionType: 'call', K: atmK, tenorDays: 21, side: buy ? 'buy' : 'sell', quantity: n,
-      rationale: `Gamma concentrates in SHORT-dated at-the-money options, so a ~21-day ATM option flattens gamma with the least vega baggage. ${buy ? 'Buy' : 'Sell'} ≈ ${money(n)} ATM ${atmK} call${n >= 2 ? 's' : ''}. It brings about $${money(signedVega)}/vol-pt of vega and ~${money(signedDelta)} delta — re-hedge that delta with the future.`,
+      rationale: `Gamma concentrates in SHORT-dated at-the-money options, so a ~21-day ATM option flattens gamma with the least vega baggage. ${buy ? 'Buy' : 'Sell'} ≈ ${money(n)} ATM ${atmK} call${n >= 2 ? 's' : ''}. It brings about ${signedDollars(signedVega)}/vol-pt of vega and ≈ ${money(signedDelta)} delta — re-hedge that delta with the future.`,
     } : undefined
 
     if (shortGamma && hotter) {

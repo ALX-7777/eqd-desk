@@ -3,13 +3,35 @@ strip of OTM options weighted 1/K² (Demeterfi–Derman–Kamal–Zou).
 
 Splitting the strip at the forward F removes the boundary term::
 
-    K_var = (2·e^(rT)/T) · [ Σ_{K<F} (ΔK/K²)·P(K) + Σ_{K≥F} (ΔK/K²)·C(K) ]
+    K_var = (2·e^(rT)/T) · ∫ Q(K)/K² dK      Q(K) = P(K) for K < F, C(K) for K ≥ F
 
 The fair variance equals −(2/T)·E^Q[ln(S_T/F)] (the log contract); under GBM that is
-exactly σ², so a flat surface returns σ² (validated in tests). With a real downward skew
-the strip is overweight low-strike (high-vol) puts, so the fair vol prints ABOVE the ATM
-vol: the convexity premium that makes VIX (a 30-day variance swap on the S&P) trade rich
-to ATM.
+exactly σ², so a flat surface returns σ². With a real downward skew the strip is overweight
+low-strike (high-vol) puts, so the fair vol prints ABOVE the ATM vol: the convexity premium
+that makes VIX (a 30-day variance swap on the S&P) trade rich to ATM.
+
+Discrete strip. On an evenly spaced strike grid (spacing ΔK) the integral over the strip
+becomes a trapezoid-rule sum (weight ΔK/K², halved at the two end strikes so the sum covers
+exactly lo…hi), plus one closed-form correction for the kink at the forward::
+
+    K_var ≈ (2·e^(rT)/T) · Σ wᵢ·Q(Kᵢ)  −  (ΔK/F)²·B₂(θ)/T      wᵢ = ΔK/Kᵢ² (½ at the ends)
+    θ = (F − K₀)/ΔK ∈ [0, 1)     K₀ = the grid strike at or just below F
+    B₂(θ) = θ² − θ + 1/6         (the second Bernoulli polynomial)
+
+Why: Q(K)/K² is smooth except at F, where the strip switches from puts to calls and its
+slope drops by e^(−rT)/F² (put–call parity: C − P = e^(−rT)·(F − K)). An even-grid sum
+integrates the smooth part almost exactly but mis-counts that kink by (ΔK²/2)·B₂(θ)·e^(−rT)/F²
+(the Euler–Maclaurin term for a kink θ of the way between two strikes). Left in, the error
+in variance runs from −(ΔK/F)²/(12T) to +(ΔK/F)²/(6T): negligible at a year, but at 7 days
+and 5% vol on the default strip it prints 4.80% for a flat 5% smile. The CBOE VIX formula's
+−(1/T)·(F/K₀ − 1)² term (with the put–call average at K₀) removes the θ-dependent part of
+the same error; the constant 1/6 is the part it keeps, negligible at listed SPX strike
+spacing but not on a 400-strike grid from 0.3F to 3F.
+
+Truncation. Strikes outside ``lo_mult·F … hi_mult·F`` are simply absent, which drops the
+tails: it matters only at long tenors and high vol (a flat 60% smile at 1 year prices ≈59.5%
+on the default 0.3F–3F strip). A wider strip is not automatically better with a parametric
+smile whose wings grow without bound (a quadratic in log-moneyness).
 
 Pure: the surface is supplied as a ``vol_for(K)`` callback so the engine keeps no data
 dependency.
@@ -61,7 +83,7 @@ class StripPoint:
     K: float
     """Strike."""
     weight: float
-    """Replication weight ΔK / K²."""
+    """Replication weight ΔK / K² (half that at the strip's first and last strike)."""
     option_price: float
     """OTM option price used at this strike (put below the forward, call at/above it)."""
     type: OptionType
@@ -78,6 +100,9 @@ class VarSwapResult:
     """Annualised fair variance K_var."""
     fair_vol: float
     """Fair volatility = √(fair variance) (floored at 0 under the root)."""
+    grid_correction: float
+    """The forward-kink correction −(ΔK/F)²·B₂(θ)/T already included in
+    :attr:`fair_variance` (annualised variance; 0 when F lies outside the strip)."""
     forward: float
     """Forward F = S·e^((r−q)T)."""
     atm_vol: float
@@ -91,7 +116,9 @@ def price_variance_swap(i: VarSwapInputs) -> VarSwapResult:
 
     Strikes run evenly from ``lo_mult·F`` to ``hi_mult·F`` (``n_strikes`` points, spacing
     ΔK); non-positive strikes are skipped. Each strike prices an OTM vanilla at the smile
-    vol ``vol_for(K)``: a put for K < F, a call for K ≥ F.
+    vol ``vol_for(K)``: a put for K < F, a call for K ≥ F, weighted ΔK/K² (trapezoid rule:
+    half at the first and last grid strike). When F lies inside the strip (``lo ≤ F < hi``)
+    the forward-kink correction −(ΔK/F)²·B₂(θ)/T is added.
 
     Raises:
         ValueError: if ``T <= 0`` or ``n_strikes < 2``, or via the vanilla pricer on a bad
@@ -122,15 +149,25 @@ def price_variance_swap(i: VarSwapInputs) -> VarSwapResult:
         option_price = vanilla_price(
             BsmInputs(S=i.S, K=K, T=i.T, r=i.r, q=i.q, sigma=sigma), option_type
         )
-        weight = dK / (K * K)
+        end = j == 0 or j == n - 1  # trapezoid rule: the strip's ends get half a slice
+        weight = (0.5 * dK if end else dK) / (K * K)
         contribution = weight * option_price
         total += contribution
         strip.append(StripPoint(K, weight, option_price, option_type, contribution))
 
-    fair_variance = ((2 * math.exp(i.r * i.T)) / i.T) * total
+    # Forward-kink correction (module doc): θ = where F sits between its two grid strikes.
+    grid_correction = 0.0
+    if lo <= F < hi:
+        theta = (F - lo) / dK
+        theta -= math.floor(theta)
+        g = dK / F
+        grid_correction = -(g * g) * (theta * theta - theta + 1 / 6) / i.T
+
+    fair_variance = ((2 * math.exp(i.r * i.T)) / i.T) * total + grid_correction
     return VarSwapResult(
         fair_variance=fair_variance,
         fair_vol=math.sqrt(max(fair_variance, 0.0)),
+        grid_correction=grid_correction,
         forward=F,
         atm_vol=i.vol_for(F),
         strip=tuple(strip),
